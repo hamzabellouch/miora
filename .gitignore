@@ -1,0 +1,74 @@
+# Built application files
+*.apk
+*.aab
+*.ap_
+*.aab_
+*.dex
+
+# Files for the ART/Dalvik VM
+*.class
+
+# Generated files
+bin/
+gen/
+out/
+release/
+app/release/
+build/
+app/build/
+
+# Gradle & Kotlin files
+.gradle/
+.kotlin/
+**/build/
+gradle-app.setting
+!gradle-wrapper.jar
+!gradle-wrapper.properties
+
+# Local configuration file (sdk path, etc.)
+local.properties
+
+# Signing files & Keystores (CRITICAL - NEVER COMMIT)
+*.jks
+*.keystore
+*.p12
+*.pfx
+release_key.jks
+keystore.properties
+
+# Proguard / R8 folder & mapping files
+proguard/
+mapping.txt
+**/mapping.txt
+**/seeds.txt
+**/usage.txt
+**/configuration.txt
+
+# Android Studio / IntelliJ IDEA
+*.iml
+.idea/
+.navigation/
+captures/
+.externalNativeBuild/
+.cxx/
+output-metadata.json
+
+# Environment & Secrets
+.env
+.env.*
+*.pem
+*.key
+google-services.json
+
+# Scratch & Temporary files
+scratch*
+scratch_fg.png
+*.tmp
+*.bak
+*.swp
+*.log
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+Desktop.ini
