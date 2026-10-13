@@ -6,7 +6,7 @@
 Share high-resolution photos, 4K videos, audio, documents, and large files seamlessly over Wi-Fi Direct, Local Hotspot, Bluetooth, and QR pairing — 100% offline with zero cloud servers.
 </p>
 
-<img width="2752" height="1536" alt="miora" src="https://github.com/user-attachments/assets/7735d78f-767c-49dc-b3c8-9e720baa10a7" />
+<img width="2752" height="1536" alt="miora" src="https://github.com/user-attachments/assets/84cbbccd-cdf7-4496-afeb-521862dcf97f" />
 
 
 
