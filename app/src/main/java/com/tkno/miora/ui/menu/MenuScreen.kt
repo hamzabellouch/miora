@@ -299,6 +299,9 @@ fun GeneralSettingsPage(onNavigateBack: () -> Unit) {
     var use5GhzBand by remember {
         mutableStateOf(com.tkno.miora.model.DeviceConnectivityManager.isUse5GhzBandEnabled(context))
     }
+    var enableLanTransfer by remember {
+        mutableStateOf(com.tkno.miora.model.DeviceConnectivityManager.isLanTransferEnabled(context))
+    }
     var showEditNameDialog by remember { mutableStateOf(false) }
     var showProtocolDialog by remember { mutableStateOf(false) }
 
@@ -364,6 +367,18 @@ fun GeneralSettingsPage(onNavigateBack: () -> Unit) {
                 }
             )
 
+            PreferenceSwitch(
+                title = stringResource(R.string.enable_lan_transfer),
+                description = stringResource(R.string.enable_lan_transfer_desc),
+                icon = Icons.Outlined.Router,
+                isChecked = enableLanTransfer,
+                onClick = {
+                    val newValue = !enableLanTransfer
+                    enableLanTransfer = newValue
+                    com.tkno.miora.model.DeviceConnectivityManager.setLanTransferEnabled(context, newValue)
+                }
+            )
+
             PreferenceItem(
                 title = stringResource(R.string.save_location),
                 description = stringResource(R.string.save_location_desc),
@@ -393,6 +408,9 @@ fun GeneralSettingsPage(onNavigateBack: () -> Unit) {
             text = {
                 Column {
                     com.tkno.miora.model.TransferProtocol.values().forEach { proto ->
+                        if (proto == com.tkno.miora.model.TransferProtocol.LOCAL_WIFI && !enableLanTransfer) {
+                            return@forEach
+                        }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1590,9 +1608,9 @@ fun AboutPage(
     AppUpdater(isAutoUpdateEnabled = isAutoUpdateEnabled)
 
     val versionName = try {
-        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.0.1-beta"
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.0.2-beta"
     } catch (e: Exception) {
-        "0.0.1-beta"
+        "0.0.2-beta"
     }
     val info = "App version: $versionName\nPackage name: ${context.packageName}\nDevice: Android ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})"
     val uriHandler = LocalUriHandler.current

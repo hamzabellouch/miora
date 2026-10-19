@@ -1,9 +1,14 @@
 package com.tkno.miora.model
 
+import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
+import java.io.FileInputStream
 
 enum class TransferProtocol(val displayName: String, val badge: String) {
     WIFI_DIRECT("Wi-Fi Direct", "250 Mbps"),
+    LOCAL_WIFI("Local Wi-Fi (LAN)", "LAN / Router"),
     BLUETOOTH("Bluetooth", "Low Power")
 }
 
@@ -83,6 +88,22 @@ data class TransferRecord(
 
     val isDocument: Boolean
         get() = extension in listOf("pdf", "doc", "docx", "txt", "xls", "xlsx", "ppt", "pptx", "csv", "json")
+    val formattedSpeed: String
+        get() = formatSpeed(speedMbps)
+}
+
+fun formatSpeed(speedMbps: Float): String {
+    if (speedMbps <= 0.0001f) return "0 KB/s"
+    return if (speedMbps < 1.0f) {
+        val kbps = speedMbps * 1024f
+        if (kbps < 10f) {
+            String.format(java.util.Locale.US, "%.1f KB/s", kbps)
+        } else {
+            String.format(java.util.Locale.US, "%.0f KB/s", kbps)
+        }
+    } else {
+        String.format(java.util.Locale.US, "%.1f MB/s", speedMbps)
+    }
 }
 
 fun formatFileSize(bytes: Long): String {
@@ -91,4 +112,97 @@ fun formatFileSize(bytes: Long): String {
     val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt().coerceIn(0, units.size - 1)
     val size = bytes / Math.pow(1024.0, digitGroups.toDouble())
     return String.format(java.util.Locale.US, "%.1f %s", size, units[digitGroups])
+}
+
+fun resolveUriToMediaItem(context: Context, uri: Uri): MediaItem {
+    var name = "File_${System.currentTimeMillis()}"
+    var size = 0L
+    val mime = context.contentResolver.getType(uri) ?: "*/*"
+
+    try {
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+            if (cursor.moveToFirst()) {
+                if (nameIdx != -1) cursor.getString(nameIdx)?.let { name = it }
+                if (sizeIdx != -1 && !cursor.isNull(sizeIdx)) size = cursor.getLong(sizeIdx)
+            }
+        }
+    } catch (_: Exception) {}
+
+    if (size <= 0L) {
+        try {
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                val chan = FileInputStream(pfd.fileDescriptor).channel
+                val chanSize = chan.size()
+                if (chanSize > 0L) size = chanSize
+                else if (pfd.statSize > 0L) size = pfd.statSize
+            }
+        } catch (_: Exception) {}
+    }
+    if (size <= 0L) {
+        try {
+            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { afd ->
+                if (afd.length > 0L) size = afd.length
+            }
+        } catch (_: Exception) {}
+    }
+    if (size <= 0L) {
+        try {
+            context.contentResolver.query(uri, arrayOf(android.provider.MediaStore.MediaColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val s = c.getLong(0)
+                    if (s > 0L) size = s
+                }
+            }
+        } catch (_: Exception) {}
+    }
+    if (!name.contains('.')) {
+        val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
+            ?: when {
+                mime.startsWith("video/") -> "mp4"
+                mime.startsWith("image/") -> "jpg"
+                mime.startsWith("audio/") -> "mp3"
+                else -> null
+            }
+        if (!ext.isNullOrBlank()) {
+            name = "$name.$ext"
+        }
+    }
+
+    return MediaItem(uri = uri, name = name, size = size.coerceAtLeast(0L), mimeType = mime)
+}
+
+fun resolveUrisToMediaItems(context: Context, uris: List<Uri>): List<MediaItem> {
+    return uris.map { resolveUriToMediaItem(context, it) }
+}
+
+data class TransferSessionState(
+    val sessionId: String = java.util.UUID.randomUUID().toString(),
+    val totalFiles: Int = 0,
+    val completedFilesCount: Int = 0,
+    val baseBytesTransferred: Long = 0L,
+    val bytesTransferred: Long = 0L,
+    val totalBytes: Long = 0L,
+    val speedMbps: Float = 0f,
+    val currentFileName: String = "",
+    val completedRecords: List<TransferRecord> = emptyList(),
+    val status: TransferStatus = TransferStatus.CONNECTING,
+    val isFinished: Boolean = false,
+    val isSuccess: Boolean = false,
+    val protocol: TransferProtocol = TransferProtocol.WIFI_DIRECT,
+    val receiverName: String = "",
+    val direction: TransferDirection = TransferDirection.SEND
+) {
+    val progress: Float
+        get() = if (totalBytes > 0L) (bytesTransferred.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f
+
+    val formattedSpeed: String
+        get() = formatSpeed(speedMbps)
+
+    val formattedBytesProgress: String
+        get() = "${formatFileSize(bytesTransferred)} / ${formatFileSize(totalBytes)}"
+
+    val formattedCountProgress: String
+        get() = "$completedFilesCount/$totalFiles"
 }

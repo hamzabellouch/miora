@@ -34,7 +34,7 @@ import com.tkno.miora.model.TransferProtocol
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TransferProtocolDialog(
-    selectedProtocol: TransferProtocol,
+    selectedProtocol: TransferProtocol?,
     onProtocolSelect: (TransferProtocol) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
@@ -73,7 +73,9 @@ fun TransferProtocolDialog(
                 Icon(
                     imageVector = when (selectedProtocol) {
                         TransferProtocol.WIFI_DIRECT -> Icons.Outlined.Wifi
+                        TransferProtocol.LOCAL_WIFI -> Icons.Outlined.Router
                         TransferProtocol.BLUETOOTH -> Icons.Outlined.Bluetooth
+                        null -> Icons.Outlined.SwapHoriz
                     },
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -132,7 +134,27 @@ fun TransferProtocolDialog(
                     }
                 )
 
-                // 2. Bluetooth
+                // 2. Local Wi-Fi (LAN) - only shown when enabled in Settings (General)
+                val isLanEnabled = DeviceConnectivityManager.isLanTransferEnabled(context)
+                if (isLanEnabled) {
+                    ProtocolDetailCard(
+                        icon = Icons.Outlined.Router,
+                        title = stringResource(R.string.protocol_local_wifi),
+                        badge = "LAN / Router",
+                        description = stringResource(R.string.protocol_local_wifi_details),
+                        isSelected = selectedProtocol == TransferProtocol.LOCAL_WIFI,
+                        isHardwareEnabled = isWifiEnabled,
+                        hardwareOffWarning = if (!isWifiEnabled) "Wi-Fi is off • Tap to enable" else null,
+                        onEnableHardware = { DeviceConnectivityManager.openWifiSettings(context) },
+                        onSelect = {
+                            onProtocolSelect(TransferProtocol.LOCAL_WIFI)
+                            TransferController.setProtocol(context, TransferProtocol.LOCAL_WIFI)
+                            onDismiss()
+                        }
+                    )
+                }
+
+                // 3. Bluetooth
                 ProtocolDetailCard(
                     icon = Icons.Outlined.Bluetooth,
                     title = stringResource(R.string.bluetooth),

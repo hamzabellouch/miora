@@ -22,6 +22,7 @@ import androidx.compose.material.icons.outlined.Upload
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.Menu
+import com.tkno.miora.ui.icon.CompareArrows
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshots.SnapshotStateList
@@ -70,7 +71,7 @@ private fun getTabItem(tab: Tab): NavigationTabItem {
     return when (tab) {
         Tab.Send -> NavigationTabItem(Tab.Send, Icons.Outlined.Upload, Icons.Filled.Upload, R.string.tab_send)
         Tab.Receive -> NavigationTabItem(Tab.Receive, Icons.Outlined.Download, Icons.Filled.Download, R.string.tab_receive)
-        Tab.Transfers -> NavigationTabItem(Tab.Transfers, Icons.Outlined.SwapHoriz, Icons.Filled.SwapHoriz, R.string.tab_transfers)
+        Tab.Transfers -> NavigationTabItem(Tab.Transfers, CompareArrows, CompareArrows, R.string.tab_transfers)
         Tab.Menu -> NavigationTabItem(Tab.Menu, Icons.Outlined.Menu, Icons.Filled.Menu, R.string.tab_menu)
     }
 }

@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import java.util.Locale
 
 import android.content.Intent
+import android.net.Uri
 import com.tkno.miora.ui.common.LocalDarkTheme
 import com.tkno.miora.util.DarkThemePreference
 import com.tkno.miora.util.LanguageManager
@@ -74,6 +75,60 @@ class MainActivity : ComponentActivity() {
       navigateToUpdateState.value = true
       triggerUpdateState.value = trigger
     }
+
+    val sharedUris = extractUrisFromIntent(intent)
+    if (sharedUris.isNotEmpty()) {
+      TransferController.setPendingSharedUris(sharedUris)
+    }
+  }
+
+  private fun extractUrisFromIntent(intent: Intent?): List<Uri> {
+    if (intent == null) return emptyList()
+    val action = intent.action ?: return emptyList()
+    val uris = mutableListOf<Uri>()
+
+    when (action) {
+      Intent.ACTION_SEND -> {
+        val streamUri = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+          intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+          @Suppress("DEPRECATION")
+          intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+        }
+        if (streamUri != null) {
+          uris.add(streamUri)
+        } else {
+          intent.clipData?.let { clipData ->
+            for (i in 0 until clipData.itemCount) {
+              clipData.getItemAt(i).uri?.let { uris.add(it) }
+            }
+          }
+        }
+        if (uris.isEmpty() && intent.data != null) {
+          intent.data?.let { uris.add(it) }
+        }
+      }
+      Intent.ACTION_SEND_MULTIPLE -> {
+        val streamUris = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+          intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+          @Suppress("DEPRECATION")
+          intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+        }
+        if (!streamUris.isNullOrEmpty()) {
+          uris.addAll(streamUris.filterNotNull())
+        }
+        intent.clipData?.let { clipData ->
+          for (i in 0 until clipData.itemCount) {
+            val u = clipData.getItemAt(i).uri
+            if (u != null && u !in uris) {
+              uris.add(u)
+            }
+          }
+        }
+      }
+    }
+    return uris.distinct()
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {

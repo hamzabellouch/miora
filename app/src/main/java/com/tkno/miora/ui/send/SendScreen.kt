@@ -2,6 +2,7 @@ package com.tkno.miora.ui.send
 
 import android.Manifest
 import android.content.Context
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -14,6 +15,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -25,9 +27,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
+import com.tkno.miora.ui.icon.CompareArrows
+import com.tkno.miora.ui.icon.Files
+import com.tkno.miora.ui.icon.LibraryMusic
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -58,23 +64,35 @@ import kotlinx.coroutines.launch
 @Composable
 fun SendScreen() {
     val context = LocalContext.current
-    val globalProtocol by TransferController.selectedProtocol.collectAsState()
-    var selectedMedia by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
-    var selectedProtocol by remember { mutableStateOf(globalProtocol) }
-    var showQrScannerModal by remember { mutableStateOf(false) }
+    val prefs = remember { context.getSharedPreferences("miora_prefs", Context.MODE_PRIVATE) }
+    var useClassicTaskbar by remember { mutableStateOf(prefs.getBoolean("use_classic_taskbar", false)) }
 
-    LaunchedEffect(globalProtocol) {
-        selectedProtocol = globalProtocol
+    DisposableEffect(prefs) {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { p, key ->
+            if (key == "use_classic_taskbar") {
+                useClassicTaskbar = p.getBoolean("use_classic_taskbar", false)
+            }
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose {
+            prefs.unregisterOnSharedPreferenceChangeListener(listener)
+        }
     }
+
+    var selectedMedia by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var selectedProtocol by remember { mutableStateOf<TransferProtocol?>(null) }
+    var showQrScannerModal by remember { mutableStateOf(false) }
 
     val isScanning by TransferController.isScanning.collectAsState()
     val peers by TransferController.discoveredPeers.collectAsState()
     val activeSend by TransferController.activeSend.collectAsState()
+    val activeSession by TransferController.activeSession.collectAsState()
+    val lastScannedQrPayload by TransferController.lastScannedQrPayload.collectAsState()
     val isWifiEnabled by DeviceConnectivityManager.isWifiEnabled.collectAsState()
     val isBluetoothEnabled by DeviceConnectivityManager.isBluetoothEnabled.collectAsState()
 
     LaunchedEffect(selectedProtocol, isBluetoothEnabled, isWifiEnabled, selectedMedia.size) {
-        if (selectedProtocol != TransferProtocol.WIFI_DIRECT) {
+        if (selectedProtocol == TransferProtocol.BLUETOOTH || selectedProtocol == TransferProtocol.LOCAL_WIFI) {
             TransferController.startScanning()
         } else {
             TransferController.stopScanning()
@@ -119,37 +137,32 @@ fun SendScreen() {
     // Activity Result Launchers
     val handleSelectedUris: (List<Uri>) -> Unit = { uris: List<Uri> ->
         if (uris.isNotEmpty()) {
-            val items = uris.map { uri ->
-                var name = "File_${System.currentTimeMillis()}"
-                var size = 0L
-                val mime = context.contentResolver.getType(uri) ?: "*/*"
+            val items = resolveUrisToMediaItems(context, uris)
+            val maxAllowed = if (selectedProtocol == TransferProtocol.BLUETOOTH) 100 else 500
+            val existingUris = selectedMedia.map { it.uri }.toSet()
+            val uniqueNewItems = items.filter { it.uri !in existingUris }
+            val availableSlots = (maxAllowed - selectedMedia.size).coerceAtLeast(0)
 
-                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
-                    if (cursor.moveToFirst()) {
-                        if (nameIdx != -1) cursor.getString(nameIdx)?.let { name = it }
-                        if (sizeIdx != -1 && !cursor.isNull(sizeIdx)) size = cursor.getLong(sizeIdx)
-                    }
+            if (uniqueNewItems.size > availableSlots) {
+                val toastMsg = if (selectedProtocol == TransferProtocol.BLUETOOTH) {
+                    context.getString(R.string.max_files_limit_bt, 100)
+                } else {
+                    context.getString(R.string.max_files_limit_wifi, 500)
                 }
-                if (size <= 0L) {
-                    try {
-                        context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
-                            if (pfd.statSize > 0L) size = pfd.statSize
-                        }
-                    } catch (_: Exception) {}
-                }
-                if (size <= 0L) {
-                    try {
-                        context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { afd ->
-                            if (afd.length > 0L) size = afd.length
-                        }
-                    } catch (_: Exception) {}
-                }
-
-                MediaItem(uri = uri, name = name, size = size.coerceAtLeast(0L), mimeType = mime)
+                Toast.makeText(context, toastMsg, Toast.LENGTH_LONG).show()
             }
-            selectedMedia = (selectedMedia + items).distinctBy { it.uri }
+
+            val itemsToAdd = uniqueNewItems.take(availableSlots)
+            selectedMedia = selectedMedia + itemsToAdd
+        }
+    }
+
+    // Inbound shared media from external apps (Gallery, Files, etc.)
+    val pendingSharedUris by TransferController.pendingSharedUris.collectAsState()
+    LaunchedEffect(pendingSharedUris) {
+        if (pendingSharedUris.isNotEmpty()) {
+            handleSelectedUris(pendingSharedUris)
+            TransferController.clearPendingSharedUris()
         }
     }
 
@@ -164,13 +177,65 @@ fun SendScreen() {
     )
 
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 20.dp)
+        modifier = Modifier.fillMaxSize()
     ) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = 24.dp, bottom = 120.dp),
+        if (activeSession != null) {
+            SendTransferSessionView(
+                session = activeSession!!,
+                useClassicTaskbar = useClassicTaskbar,
+                onCloseSession = {
+                    TransferController.clearTransferSession()
+                    selectedMedia = emptyList()
+                },
+                onSendAdditionalFiles = { additionalFiles ->
+                    val payload = lastScannedQrPayload
+                    if (payload != null) {
+                        TransferController.startSendTransferViaQr(
+                            ssid = payload.ssid,
+                            passphrase = payload.passphrase,
+                            hostIp = payload.hostIp,
+                            hostIps = payload.hostIps,
+                            port = payload.port,
+                            items = additionalFiles,
+                            onComplete = { success ->
+                                if (success) {
+                                    Toast.makeText(context, context.getString(R.string.transfer_completed), Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, context.getString(R.string.transfer_failed), Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        )
+                    } else {
+                        val peers = TransferController.discoveredPeers.value
+                        val connectedPeer = peers.firstOrNull { it.isConnected } ?: peers.firstOrNull()
+                        if (connectedPeer != null) {
+                            TransferController.startSendTransfer(
+                                peer = connectedPeer,
+                                items = additionalFiles,
+                                protocolPreference = selectedProtocol ?: connectedPeer.protocol,
+                                onComplete = { success ->
+                                    if (success) {
+                                        Toast.makeText(context, context.getString(R.string.transfer_completed), Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context, context.getString(R.string.transfer_failed), Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            )
+                        } else {
+                            selectedMedia = (selectedMedia + additionalFiles).distinctBy { it.uri }
+                        }
+                    }
+                }
+            )
+        } else {
+            LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 20.dp),
+            contentPadding = PaddingValues(
+                top = 24.dp,
+                bottom = if (useClassicTaskbar) 120.dp else 260.dp
+            ),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
             // Header with Title & Transfer Protocol Capsule (Matching About's What's New capsule style)
@@ -198,28 +263,33 @@ fun SendScreen() {
                     Surface(
                         onClick = { showProtocolDialog = true },
                         shape = CircleShape,
-                        color = MaterialTheme.colorScheme.secondaryContainer
+                        color = if (selectedProtocol != null) MaterialTheme.colorScheme.secondaryContainer
+                                else MaterialTheme.colorScheme.surfaceContainerHigh
                     ) {
                         Row(
                             modifier = Modifier
                                 .height(36.dp)
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                                .padding(horizontal = 14.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Icon(
                                 imageVector = when (selectedProtocol) {
                                     TransferProtocol.WIFI_DIRECT -> Icons.Outlined.Wifi
+                                    TransferProtocol.LOCAL_WIFI -> Icons.Outlined.Router
                                     TransferProtocol.BLUETOOTH -> Icons.Outlined.Bluetooth
+                                    null -> Icons.Outlined.Tune
                                 },
                                 contentDescription = null,
                                 modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.primary
+                                tint = if (selectedProtocol != null) MaterialTheme.colorScheme.primary
+                                       else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
-                                text = selectedProtocol.displayName,
+                                text = selectedProtocol?.displayName ?: stringResource(R.string.select_protocol),
                                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                                color = if (selectedProtocol != null) MaterialTheme.colorScheme.onSecondaryContainer
+                                        else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -250,7 +320,7 @@ fun SendScreen() {
                             onClick = { mediaLauncher.launch("video/*") }
                         )
                         MediaPickerChip(
-                            icon = Icons.Outlined.Audiotrack,
+                            icon = LibraryMusic,
                             label = stringResource(R.string.pick_audio),
                             modifier = Modifier.weight(1f),
                             onClick = { mediaLauncher.launch("audio/*") }
@@ -285,7 +355,7 @@ fun SendScreen() {
                             }
                         )
                         MediaPickerChip(
-                            icon = Icons.Outlined.Folder,
+                            icon = Files,
                             label = stringResource(R.string.pick_files),
                             modifier = Modifier.weight(1f),
                             onClick = { mediaLauncher.launch("*/*") }
@@ -356,121 +426,66 @@ fun SendScreen() {
                 }
             }
 
-            // Central Action: Wi-Fi Direct (QR Scanner Mode) vs Bluetooth (Nearby Devices Radar)
-            if (selectedProtocol == TransferProtocol.WIFI_DIRECT) {
+            // Central Action: Prompt for protocol selection or Bluetooth Radar
+            if (selectedProtocol == null) {
+                // Initial State: Prompt to select a Transfer Protocol
                 item {
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceContainer,
                         shape = RoundedCornerShape(22.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showProtocolDialog = true }
                     ) {
-                        Column(
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                                .padding(20.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
                             Surface(
                                 color = MaterialTheme.colorScheme.primaryContainer,
                                 shape = CircleShape,
-                                modifier = Modifier.size(72.dp)
+                                modifier = Modifier.size(48.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
-                                        imageVector = Icons.Outlined.QrCodeScanner,
+                                        imageVector = CompareArrows,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(36.dp)
+                                        modifier = Modifier.size(26.dp)
                                     )
                                 }
                             }
-
                             Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.weight(1f),
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 Text(
-                                    text = "Wi-Fi Direct Transfer",
-                                    fontSize = 18.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    textAlign = TextAlign.Center
-                                )
-                                Text(
-                                    text = "Point your camera at the QR code displayed on the receiver's screen to connect and send files instantly.",
-                                    fontSize = 13.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(horizontal = 8.dp)
-                                )
-                            }
-
-                            if (!isWifiEnabled) {
-                                Surface(
-                                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f),
-                                    shape = RoundedCornerShape(12.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(12.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Icon(Icons.Outlined.WarningAmber, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
-                                            Text("Wi-Fi is required for direct transfer", fontSize = 12.sp, color = MaterialTheme.colorScheme.onErrorContainer)
-                                        }
-                                        TextButton(onClick = { DeviceConnectivityManager.openWifiSettings(context) }) {
-                                            Text("Enable")
-                                        }
-                                    }
-                                }
-                            }
-
-                            val hasSelectedFiles = selectedMedia.isNotEmpty()
-                            Button(
-                                onClick = {
-                                    if (!hasSelectedFiles) {
-                                        Toast.makeText(context, "Please select files to send first", Toast.LENGTH_SHORT).show()
-                                        return@Button
-                                    }
-                                    val hasCamera = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-                                    if (hasCamera) {
-                                        showQrScannerModal = true
-                                    } else {
-                                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                                    }
-                                },
-                                enabled = hasSelectedFiles,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(52.dp),
-                                shape = CircleShape,
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.primary,
-                                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                                    disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.38f),
-                                    disabledContentColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.6f)
-                                )
-                            ) {
-                                Icon(Icons.Outlined.CameraAlt, contentDescription = null, modifier = Modifier.size(20.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "Scan Receiver QR Code",
+                                    text = stringResource(R.string.select_protocol_hint_title),
+                                    fontSize = 16.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    fontSize = 15.sp
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = stringResource(R.string.select_protocol_hint_desc),
+                                    fontSize = 12.sp,
+                                    lineHeight = 17.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp)
+                            )
                         }
                     }
                 }
-            } else {
-                // Nearby Radar & Discovered Devices (Bluetooth Mode)
+            } else if (selectedProtocol == TransferProtocol.BLUETOOTH || selectedProtocol == TransferProtocol.LOCAL_WIFI) {
+                // Nearby Radar & Discovered Devices (Bluetooth / Local Wi-Fi Mode)
                 item {
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -520,7 +535,13 @@ fun SendScreen() {
                                 }
                             }
 
-                            if (!isWifiEnabled || !isBluetoothEnabled) {
+                            val isMissingRequirement = if (selectedProtocol == TransferProtocol.LOCAL_WIFI) {
+                                !isWifiEnabled
+                            } else {
+                                !isWifiEnabled || !isBluetoothEnabled
+                            }
+
+                            if (isMissingRequirement) {
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Surface(
                                     color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f),
@@ -603,7 +624,7 @@ fun SendScreen() {
                                                 TransferController.startSendTransfer(
                                                     peer = peer,
                                                     items = selectedMedia,
-                                                    protocolPreference = selectedProtocol,
+                                                    protocolPreference = selectedProtocol ?: TransferProtocol.BLUETOOTH,
                                                     onComplete = { success ->
                                                         if (success) {
                                                             Toast.makeText(context, context.getString(R.string.transfer_completed), Toast.LENGTH_SHORT).show()
@@ -632,8 +653,71 @@ fun SendScreen() {
                 onCancel = { TransferController.cancelSendTransfer() },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 90.dp)
+                    .then(
+                        if (!useClassicTaskbar) {
+                            Modifier
+                                .navigationBarsPadding()
+                                .padding(bottom = 90.dp, start = 22.dp, end = 22.dp)
+                        } else {
+                            Modifier.padding(bottom = 16.dp, start = 22.dp, end = 22.dp)
+                        }
+                    )
             )
+        }
+
+        // Wi-Fi Direct & LAN Floating Card above Taskbar
+        AnimatedVisibility(
+            visible = (selectedProtocol == TransferProtocol.WIFI_DIRECT || selectedProtocol == TransferProtocol.LOCAL_WIFI) && activeSend == null,
+            enter = slideInVertically(
+                initialOffsetY = { fullHeight -> (fullHeight * 0.35f).toInt().coerceAtLeast(60) },
+                animationSpec = tween(durationMillis = 220, easing = CubicBezierEasing(0.0f, 0.0f, 0.2f, 1.0f))
+            ) + fadeIn(
+                animationSpec = tween(durationMillis = 220)
+            ) + scaleIn(
+                initialScale = 0.94f,
+                animationSpec = tween(durationMillis = 220)
+            ),
+            exit = slideOutVertically(
+                targetOffsetY = { fullHeight -> (fullHeight * 0.35f).toInt().coerceAtLeast(60) },
+                animationSpec = tween(durationMillis = 160, easing = CubicBezierEasing(0.4f, 0.0f, 1.0f, 1.0f))
+            ) + fadeOut(
+                animationSpec = tween(durationMillis = 160)
+            ) + scaleOut(
+                targetScale = 0.94f,
+                animationSpec = tween(durationMillis = 160)
+            ),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .then(
+                    if (!useClassicTaskbar) {
+                        Modifier
+                            .navigationBarsPadding()
+                            .padding(bottom = 90.dp, start = 22.dp, end = 22.dp)
+                    } else {
+                        Modifier.padding(bottom = 16.dp, start = 22.dp, end = 22.dp)
+                    }
+                )
+        ) {
+            WifiDirectFloatingCard(
+                isWifiEnabled = isWifiEnabled,
+                onEnableWifi = { DeviceConnectivityManager.openWifiSettings(context) },
+                onScanClick = {
+                    if (selectedMedia.isEmpty()) {
+                        Toast.makeText(context, context.getString(R.string.select_media_to_scan_hint), Toast.LENGTH_SHORT).show()
+                        return@WifiDirectFloatingCard
+                    }
+                    val hasCamera = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                    if (hasCamera) {
+                        showQrScannerModal = true
+                    } else {
+                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                    }
+                },
+                onDismiss = {
+                    selectedProtocol = null
+                }
+            )
+        }
         }
 
         // Fullscreen QR Code Camera Scanner Modal for Wi-Fi Direct
@@ -641,6 +725,7 @@ fun SendScreen() {
             QrSendScannerModal(
                 onQrScanned = { payload ->
                     showQrScannerModal = false
+                    TransferController.setLastScannedQrPayload(payload)
                     TransferController.startSendTransferViaQr(
                         ssid = payload.ssid,
                         passphrase = payload.passphrase,
@@ -763,15 +848,168 @@ fun MediaThumbnailCard(
 }
 
 @Composable
+fun WifiDirectFloatingCard(
+    isWifiEnabled: Boolean,
+    onEnableWifi: () -> Unit,
+    onScanClick: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.94f),
+        shape = RoundedCornerShape(28.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+        shadowElevation = 10.dp,
+        tonalElevation = 6.dp,
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // Header Row: Icon + Title & Description + Close button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shape = CircleShape,
+                        modifier = Modifier.size(46.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Outlined.QrCodeScanner,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = stringResource(R.string.wifi_direct_transfer),
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = stringResource(R.string.scan_qr_hint_short),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontSize = 12.sp
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "Close",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
+            // Wi-Fi warning banner if turned off
+            if (!isWifiEnabled) {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.WarningAmber,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = stringResource(R.string.wifi_required_warning),
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+                        TextButton(
+                            onClick = onEnableWifi,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = stringResource(R.string.enable),
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Action Button: Scan Receiver QR Code
+            Button(
+                onClick = onScanClick,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                shape = CircleShape,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.CameraAlt,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = stringResource(R.string.scan_receiver_qr_code),
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
 fun DiscoveredPeerCard(
     peer: DiscoveredPeer,
-    selectedProtocol: TransferProtocol = TransferProtocol.WIFI_DIRECT,
+    selectedProtocol: TransferProtocol? = TransferProtocol.BLUETOOTH,
     canSend: Boolean,
     onSendClick: () -> Unit
 ) {
     val effectiveProtocol = when (selectedProtocol) {
         TransferProtocol.WIFI_DIRECT -> TransferProtocol.WIFI_DIRECT
+        TransferProtocol.LOCAL_WIFI -> TransferProtocol.LOCAL_WIFI
         TransferProtocol.BLUETOOTH -> TransferProtocol.BLUETOOTH
+        null -> peer.protocol
     }
 
     Surface(
@@ -796,21 +1034,26 @@ fun DiscoveredPeerCard(
                         .size(44.dp)
                         .clip(CircleShape)
                         .background(
-                            if (effectiveProtocol == TransferProtocol.WIFI_DIRECT)
-                                MaterialTheme.colorScheme.primaryContainer
-                            else
-                                MaterialTheme.colorScheme.secondaryContainer
+                            when (effectiveProtocol) {
+                                TransferProtocol.WIFI_DIRECT -> MaterialTheme.colorScheme.primaryContainer
+                                TransferProtocol.LOCAL_WIFI -> MaterialTheme.colorScheme.tertiaryContainer
+                                else -> MaterialTheme.colorScheme.secondaryContainer
+                            }
                         ),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = if (effectiveProtocol == TransferProtocol.WIFI_DIRECT) Icons.Outlined.Wifi
-                        else Icons.Outlined.Bluetooth,
+                        imageVector = when (effectiveProtocol) {
+                            TransferProtocol.WIFI_DIRECT -> Icons.Outlined.Wifi
+                            TransferProtocol.LOCAL_WIFI -> Icons.Outlined.Router
+                            else -> Icons.Outlined.Bluetooth
+                        },
                         contentDescription = null,
-                        tint = if (effectiveProtocol == TransferProtocol.WIFI_DIRECT)
-                            MaterialTheme.colorScheme.onPrimaryContainer
-                        else
-                            MaterialTheme.colorScheme.onSecondaryContainer
+                        tint = when (effectiveProtocol) {
+                            TransferProtocol.WIFI_DIRECT -> MaterialTheme.colorScheme.onPrimaryContainer
+                            TransferProtocol.LOCAL_WIFI -> MaterialTheme.colorScheme.onTertiaryContainer
+                            else -> MaterialTheme.colorScheme.onSecondaryContainer
+                        }
                     )
                 }
 
@@ -973,7 +1216,7 @@ fun ActiveTransferCard(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "${(transfer.progress * 100).toInt()}% • ${String.format(java.util.Locale.US, "%.1f MB/s", transfer.speedMbps)} (${transfer.protocol.displayName})",
+                            text = "${(transfer.progress * 100).toInt()}% • ${transfer.formattedSpeed} (${transfer.protocol.displayName})",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.primary
                         )

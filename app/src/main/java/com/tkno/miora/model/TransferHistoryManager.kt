@@ -2,6 +2,11 @@ package com.tkno.miora.model
 
 import android.content.Context
 import android.content.SharedPreferences
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -13,6 +18,8 @@ object TransferHistoryManager {
     private lateinit var prefs: SharedPreferences
     private val _history = MutableStateFlow<List<TransferRecord>>(emptyList())
     val history: StateFlow<List<TransferRecord>> = _history.asStateFlow()
+    private val scope = CoroutineScope(Dispatchers.IO)
+    private var saveJob: Job? = null
 
     fun init(context: Context) {
         prefs = context.getSharedPreferences("miora_prefs", Context.MODE_PRIVATE)
@@ -29,19 +36,22 @@ object TransferHistoryManager {
         try {
             val jsonArray = JSONArray(raw)
             val list = mutableListOf<TransferRecord>()
+            val compositeRegex = Regex(""" \+\d+$""")
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
                 val id = obj.getString("id")
-                // Filter out any legacy dummy records
+                // Filter out any legacy dummy records or composite summary records (e.g. "image.jpg +2")
                 if (id in listOf("init_1", "init_2", "init_3")) continue
+                val fileName = obj.getString("fileName")
+                if (compositeRegex.containsMatchIn(fileName)) continue
 
                 list.add(
                     TransferRecord(
                         id = id,
-                        fileName = obj.getString("fileName"),
+                        fileName = fileName,
                         fileSize = obj.getLong("fileSize"),
                         direction = TransferDirection.valueOf(obj.getString("direction")),
-                        protocol = TransferProtocol.valueOf(obj.getString("protocol")),
+                        protocol = try { TransferProtocol.valueOf(obj.getString("protocol")) } catch (_: Exception) { TransferProtocol.WIFI_DIRECT },
                         timestamp = obj.getLong("timestamp"),
                         status = TransferStatus.valueOf(obj.getString("status")),
                         progress = obj.getDouble("progress").toFloat(),
@@ -81,10 +91,18 @@ object TransferHistoryManager {
         }
     }
 
+    private fun scheduleSaveHistory() {
+        saveJob?.cancel()
+        saveJob = scope.launch {
+            delay(350)
+            saveHistory(_history.value)
+        }
+    }
+
     fun addRecord(record: TransferRecord) {
-        val updated = listOf(record) + _history.value
+        val updated = (listOf(record) + _history.value.filter { it.id != record.id }).take(500)
         _history.value = updated
-        saveHistory(updated)
+        scheduleSaveHistory()
     }
 
     fun removeRecord(id: String) {
@@ -94,6 +112,7 @@ object TransferHistoryManager {
     }
 
     fun clearAll() {
+        saveJob?.cancel()
         _history.value = emptyList()
         saveHistory(emptyList())
     }

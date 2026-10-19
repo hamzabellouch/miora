@@ -37,7 +37,11 @@ object MioraTransferEngine {
     const val MIORA_UDP_BEACON_PORT = 8989
     const val PROTOCOL_MAGIC = "MIORA_TRANSFER_V1"
     private const val NSD_SERVICE_TYPE = "_miora._tcp"
-    private const val BUFFER_SIZE = 512 * 1024 // 512 KB Ultra-High-Speed Buffer
+    private const val BUFFER_SIZE = 512 * 1024 // 512 KB
+    private const val WIFI_BUFFER_SIZE = 512 * 1024 // 512 KB
+    private const val WIFI_CHUNK_SIZE = 256 * 1024 // 256 KB Ultra-High-Speed Chunk
+    private const val BT_STREAM_BUFFER_SIZE = 16 * 1024 // 16 KB Low-Latency Bluetooth Buffer
+    private const val BT_CHUNK_SIZE = 8 * 1024 // 8 KB Stable RFCOMM Packet Chunk
 
     val MIORA_BLE_SERVICE_UUID: ParcelUuid = ParcelUuid.fromString("0000fef0-0000-1000-8000-00805f9b34fb")
     val MIORA_BLE_UUID: UUID = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e")
@@ -143,12 +147,8 @@ object MioraTransferEngine {
         val wifi = appContext?.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return
         try {
             if (wifiHighPerfLock == null) {
-                val lockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-                } else {
-                    @Suppress("DEPRECATION")
-                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
-                }
+                @Suppress("DEPRECATION")
+                val lockMode = WifiManager.WIFI_MODE_FULL_HIGH_PERF
                 wifiHighPerfLock = wifi.createWifiLock(lockMode, "Miora:HighSpeedTransferLock").apply {
                     setReferenceCounted(false)
                 }
@@ -204,10 +204,12 @@ object MioraTransferEngine {
         activeDiscoveryCallback = onPeerFound
         acquireMulticastLock()
         startBleDiscovery(onPeerFound)
-        startUdpLanDiscovery(onPeerFound)
-        startNsdDiscovery(onPeerFound)
+        if (DeviceConnectivityManager.isLanTransferEnabled()) {
+            startUdpLanDiscovery(onPeerFound)
+            startNsdDiscovery(onPeerFound)
+            startLanSubnetDiscovery(onPeerFound)
+        }
         startWifiP2pDiscovery(onPeerFound)
-        startLanSubnetDiscovery(onPeerFound)
     }
 
     fun stopDiscovery() {
@@ -218,6 +220,29 @@ object MioraTransferEngine {
         stopLanSubnetDiscovery()
         stopBleDiscovery()
         releaseMulticastLock()
+    }
+
+    private var isDiscoveryPausedForTransfer = false
+    private var pausedDiscoveryCallback: ((DiscoveredPeer) -> Unit)? = null
+
+    fun pauseDiscoveryForTransfer() {
+        val cb = activeDiscoveryCallback
+        if (cb != null) {
+            pausedDiscoveryCallback = cb
+            isDiscoveryPausedForTransfer = true
+        }
+        stopDiscovery()
+    }
+
+    fun resumeDiscoveryAfterTransfer() {
+        val cb = pausedDiscoveryCallback
+        if (isDiscoveryPausedForTransfer && cb != null) {
+            isDiscoveryPausedForTransfer = false
+            pausedDiscoveryCallback = null
+            if (TransferController.isScanning.value) {
+                startDiscovery(cb)
+            }
+        }
     }
 
     private fun startWifiP2pDiscovery(onPeerFound: (DiscoveredPeer) -> Unit) {
@@ -294,7 +319,7 @@ object MioraTransferEngine {
                                         deviceAddress = targetIp,
                                         hostAddress = targetIp,
                                         port = MIORA_PORT,
-                                        protocol = TransferProtocol.WIFI_DIRECT,
+                                        protocol = TransferProtocol.LOCAL_WIFI,
                                         signalStrength = 100,
                                         isMioraDevice = true
                                     )
@@ -349,7 +374,7 @@ object MioraTransferEngine {
                                     deviceAddress = peerIp,
                                     hostAddress = peerIp,
                                     port = peerPort,
-                                    protocol = TransferProtocol.WIFI_DIRECT,
+                                    protocol = TransferProtocol.LOCAL_WIFI,
                                     signalStrength = 98,
                                     isMioraDevice = true
                                 )
@@ -449,7 +474,7 @@ object MioraTransferEngine {
                                     deviceAddress = host,
                                     hostAddress = host,
                                     port = serviceInfo.port,
-                                    protocol = TransferProtocol.WIFI_DIRECT,
+                                    protocol = TransferProtocol.LOCAL_WIFI,
                                     signalStrength = 95,
                                     isMioraDevice = true
                                 )
@@ -659,13 +684,15 @@ object MioraTransferEngine {
         currentListeningDeviceName = deviceName
         acquireMulticastLock()
 
-        registerService(deviceName)
+        if (DeviceConnectivityManager.isLanTransferEnabled()) {
+            registerService(deviceName)
+        }
 
         serverJob = engineScope.launch {
             try {
                 serverSocket = ServerSocket().apply {
                     reuseAddress = true
-                    try { receiveBufferSize = BUFFER_SIZE } catch (_: Exception) {}
+                    try { receiveBufferSize = WIFI_BUFFER_SIZE } catch (_: Exception) {}
                     bind(InetSocketAddress(MIORA_PORT))
                 }
                 while (isActive) {
@@ -676,16 +703,24 @@ object MioraTransferEngine {
                     }
                     try {
                         socket.tcpNoDelay = true
-                        socket.receiveBufferSize = BUFFER_SIZE
-                        socket.sendBufferSize = BUFFER_SIZE
+                        socket.soTimeout = 30000
+                        socket.receiveBufferSize = WIFI_BUFFER_SIZE
+                        socket.sendBufferSize = WIFI_BUFFER_SIZE
                         socket.keepAlive = true
                     } catch (_: Exception) {}
                     activeServerSocketConnection = socket
                     launch(Dispatchers.IO) {
+                        val remoteIp = socket.inetAddress?.hostAddress ?: ""
+                        val isLocalRouter = !remoteIp.startsWith("192.168.49.") && !remoteIp.startsWith("192.168.43.")
+                        val incomingProtocol = if (isLocalRouter && (TransferController.selectedProtocol.value == TransferProtocol.LOCAL_WIFI || DeviceConnectivityManager.isLanTransferEnabled())) {
+                            TransferProtocol.LOCAL_WIFI
+                        } else {
+                            TransferProtocol.WIFI_DIRECT
+                        }
                         handleIncomingStream(
                             inputStream = socket.getInputStream(),
                             outputStream = socket.getOutputStream(),
-                            protocol = TransferProtocol.WIFI_DIRECT,
+                            protocol = incomingProtocol,
                             closeConnection = {
                                 try { socket.close() } catch (_: Exception) {}
                                 if (activeServerSocketConnection === socket) {
@@ -700,11 +735,14 @@ object MioraTransferEngine {
             }
         }
 
-        startUdpBeaconBroadcaster(deviceName)
+        if (DeviceConnectivityManager.isLanTransferEnabled()) {
+            startUdpBeaconBroadcaster(deviceName)
+        }
         startBluetoothListeningServer(deviceName)
     }
 
     private fun startUdpBeaconBroadcaster(deviceName: String) {
+        if (!DeviceConnectivityManager.isLanTransferEnabled()) return
         udpBeaconJob = engineScope.launch {
             var broadcastSocket: DatagramSocket? = null
             try {
@@ -914,7 +952,12 @@ object MioraTransferEngine {
                 .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
                 .build()
 
-            val ip = DeviceConnectivityManager.getLocalIpAddress()
+            val ip = if (DeviceConnectivityManager.isLanTransferEnabled()) {
+                DeviceConnectivityManager.getLocalIpAddress()
+            } else {
+                val allIps = DeviceConnectivityManager.getAllLocalIpAddresses()
+                allIps.firstOrNull { it.startsWith("192.168.49.") || it.startsWith("192.168.43.") }
+            }
             val ipParts = try {
                 ip?.split(".")?.map { it.toInt().toByte() }?.takeIf { it.size == 4 }
             } catch (_: Exception) { null }
@@ -1027,9 +1070,12 @@ object MioraTransferEngine {
     ) = withContext(Dispatchers.IO) {
         var isTransferCompleted = false
         acquireHighPerfWifiLock()
+        val isBluetooth = protocol == TransferProtocol.BLUETOOTH
+        val streamBufSize = if (isBluetooth) BT_STREAM_BUFFER_SIZE else WIFI_BUFFER_SIZE
+        val chunkSize = if (isBluetooth) BT_CHUNK_SIZE else WIFI_CHUNK_SIZE
         try {
-            val dis = DataInputStream(BufferedInputStream(inputStream, BUFFER_SIZE))
-            val dos = DataOutputStream(BufferedOutputStream(outputStream, BUFFER_SIZE))
+            val dis = DataInputStream(BufferedInputStream(inputStream, streamBufSize))
+            val dos = DataOutputStream(BufferedOutputStream(outputStream, streamBufSize))
 
             val magic = dis.readUTF()
             if (magic == "MIORA_PROBE") {
@@ -1079,24 +1125,52 @@ object MioraTransferEngine {
                 fileSizes = fileSizes
             )
 
-            acceptanceDeferred = CompletableDeferred()
-            TransferController.postIncomingRequest(incoming)
+            // Auto-accept if receiver is actively in Discoverable Receive mode, else prompt dialog
+            val autoAccept = TransferController.isDiscoverable.value
+            if (!autoAccept) {
+                acceptanceDeferred = CompletableDeferred()
+                TransferController.postIncomingRequest(incoming)
 
-            val accepted = acceptanceDeferred?.await() ?: false
-            if (!accepted) {
-                dos.writeUTF("DECLINED")
-                dos.flush()
-                closeConnection()
-                return@withContext
+                val accepted = acceptanceDeferred?.await() ?: false
+                if (!accepted) {
+                    dos.writeUTF("DECLINED")
+                    dos.flush()
+                    closeConnection()
+                    return@withContext
+                }
             }
+
+            // Pause background discovery & heavy advertising to give 100% radio bandwidth & stability to transfer
+            pauseDiscoveryForTransfer()
+            stopBleAdvertising()
+            udpBeaconJob?.cancel()
+            udpBeaconJob = null
 
             dos.writeUTF("ACCEPT")
             dos.flush()
 
-            val targetDir = File(
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                "Miora"
-            ).apply { if (!exists()) mkdirs() }
+            val targetDir = run {
+                val publicDir = File(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    "Miora"
+                )
+                val isPublicWritable = try {
+                    if (!publicDir.exists()) publicDir.mkdirs()
+                    val testFile = File(publicDir, ".miora_test_${System.currentTimeMillis()}")
+                    if (testFile.createNewFile()) {
+                        testFile.delete()
+                        true
+                    } else false
+                } catch (_: Exception) {
+                    false
+                }
+                if (isPublicWritable) {
+                    publicDir
+                } else {
+                    val appExt = appContext?.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: appContext?.filesDir
+                    File(appExt, "Miora").apply { if (!exists()) mkdirs() }
+                }
+            }
 
             val initialRecord = TransferRecord(
                 id = UUID.randomUUID().toString(),
@@ -1109,11 +1183,21 @@ object MioraTransferEngine {
                 speedMbps = 0f
             )
             TransferController.updateActiveReceive(initialRecord)
+            TransferController.startReceiveSession(
+                fileCount = fileCount,
+                totalBytes = totalSize,
+                firstFileName = firstFileName,
+                protocol = protocol,
+                senderName = senderName
+            )
 
             var totalBytesReceived = 0L
-            val startTime = System.currentTimeMillis()
-            var lastUiUpdateMs = 0L
-            val buffer = ByteArray(BUFFER_SIZE)
+            val sessionStartTime = System.currentTimeMillis()
+            var lastUiUpdateMs = System.currentTimeMillis()
+            var windowStartTime = System.currentTimeMillis()
+            var windowBytesReceived = 0L
+            var runningInstantSpeedMbps = 0f
+            val buffer = ByteArray(chunkSize)
             val receivedPaths = mutableListOf<String>()
 
             for (i in 0 until fileCount) {
@@ -1124,7 +1208,14 @@ object MioraTransferEngine {
                 val finalFile = resolveUniqueTargetFile(targetDir, safeName)
                 currentTempFile = tempFile
 
-                BufferedOutputStream(FileOutputStream(tempFile), BUFFER_SIZE).use { fos ->
+                // Show active downloading file immediately in UI with current running speed
+                TransferController.updateReceiveSessionProgress(
+                    bytesReceived = totalBytesReceived,
+                    speedMbps = runningInstantSpeedMbps,
+                    currentFileName = safeName
+                )
+
+                BufferedOutputStream(FileOutputStream(tempFile), chunkSize).use { fos ->
                     var fileBytesRead = 0L
                     while (fileBytesRead < size) {
                         val toRead = ((size - fileBytesRead).coerceAtMost(buffer.size.toLong())).toInt()
@@ -1133,26 +1224,43 @@ object MioraTransferEngine {
                         fos.write(buffer, 0, bytesRead)
                         fileBytesRead += bytesRead
                         totalBytesReceived += bytesRead
+                        windowBytesReceived += bytesRead
 
                         val now = System.currentTimeMillis()
-                        if (now - lastUiUpdateMs >= 80L || fileBytesRead == size) {
+                        val uiElapsed = now - lastUiUpdateMs
+                        if (uiElapsed >= 160L || fileBytesRead == size) {
                             lastUiUpdateMs = now
-                            val elapsedSeconds = (now - startTime) / 1000f
-                            val speed = if (elapsedSeconds > 0f) (totalBytesReceived / (1024f * 1024f)) / elapsedSeconds else 0f
+                            val windowElapsed = (now - windowStartTime) / 1000f
+                            if (windowElapsed >= 0.2f) {
+                                val sampleSpeed = (windowBytesReceived / (1024f * 1024f)) / windowElapsed
+                                runningInstantSpeedMbps = if (runningInstantSpeedMbps <= 0f) {
+                                    sampleSpeed
+                                } else {
+                                    runningInstantSpeedMbps * 0.65f + sampleSpeed * 0.35f
+                                }
+                                windowStartTime = now
+                                windowBytesReceived = 0L
+                            }
+
                             val progress = if (totalSize > 0L) (totalBytesReceived.toFloat() / totalSize).coerceIn(0f, 1f) else 1f
 
                             TransferController.updateActiveReceive(
                                 initialRecord.copy(
                                     progress = progress,
-                                    speedMbps = speed
+                                    speedMbps = runningInstantSpeedMbps
                                 )
+                            )
+                            TransferController.updateReceiveSessionProgress(
+                                bytesReceived = totalBytesReceived,
+                                speedMbps = runningInstantSpeedMbps,
+                                currentFileName = safeName
                             )
                         }
                     }
                     fos.flush()
                 }
 
-                if (tempFile.exists() && tempFile.length() == size) {
+                if (tempFile.exists() && (tempFile.length() == size || (size == 0L && tempFile.length() == 0L))) {
                     if (finalFile.exists()) finalFile.delete()
                     val renamed = tempFile.renameTo(finalFile)
                     if (!renamed) {
@@ -1161,9 +1269,26 @@ object MioraTransferEngine {
                     }
                     currentTempFile = null
                     receivedPaths.add(finalFile.absolutePath)
+
+                    val elapsedSoFar = ((System.currentTimeMillis() - sessionStartTime) / 1000f).coerceAtLeast(0.01f)
+                    val currentSpeed = (totalBytesReceived / (1024f * 1024f)) / elapsedSoFar
+                    val completedReceivedRecord = TransferRecord(
+                        id = UUID.randomUUID().toString(),
+                        fileName = safeName,
+                        fileSize = finalFile.length(),
+                        direction = TransferDirection.RECEIVE,
+                        protocol = protocol,
+                        timestamp = System.currentTimeMillis(),
+                        status = TransferStatus.COMPLETED,
+                        progress = 1f,
+                        speedMbps = currentSpeed,
+                        uriString = finalFile.absolutePath
+                    )
+                    TransferController.onFileCompletedInReceiveSession(completedReceivedRecord)
                 } else {
+                    val receivedLen = if (tempFile.exists()) tempFile.length() else -1L
                     tempFile.delete()
-                    throw IOException("Incomplete file received: $safeName")
+                    throw IOException("Incomplete file received: $safeName (expected $size bytes, got $receivedLen)")
                 }
             }
 
@@ -1182,13 +1307,16 @@ object MioraTransferEngine {
             dos.flush()
             isTransferCompleted = true
 
-            val totalElapsedSec = ((System.currentTimeMillis() - startTime) / 1000f).coerceAtLeast(0.05f)
+            val totalElapsedSec = ((System.currentTimeMillis() - sessionStartTime) / 1000f).coerceAtLeast(0.05f)
+            val overallAverageSpeed = (totalBytesReceived / (1024f * 1024f)) / totalElapsedSec
             val finalRecord = initialRecord.copy(
                 status = TransferStatus.COMPLETED,
                 progress = 1f,
-                speedMbps = (totalBytesReceived / (1024f * 1024f)) / totalElapsedSec
+                speedMbps = overallAverageSpeed,
+                uriString = receivedPaths.firstOrNull()
             )
             TransferController.completeReceive(finalRecord)
+            TransferController.finishReceiveSession(success = true, finalSpeedMbps = overallAverageSpeed)
 
         } catch (e: Exception) {
             e.printStackTrace()
@@ -1197,11 +1325,21 @@ object MioraTransferEngine {
             }
             if (!isTransferCompleted) {
                 TransferController.cancelReceiveTransfer()
+                TransferController.finishReceiveSession(success = false)
             }
         } finally {
             closeConnection()
             acceptanceDeferred = null
             currentTempFile = null
+            if (TransferController.isDiscoverable.value && currentListeningDeviceName.isNotBlank()) {
+                startUdpBeaconBroadcaster(currentListeningDeviceName)
+                val btManager = appContext?.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+                val adapter = btManager?.adapter
+                if (adapter?.isEnabled == true) {
+                    startBleAdvertising(adapter, currentListeningDeviceName, currentBleL2capPsm)
+                }
+            }
+            resumeDiscoveryAfterTransfer()
         }
     }
 
@@ -1246,6 +1384,7 @@ object MioraTransferEngine {
     ) {
         clientJob?.cancel()
         clientJob = engineScope.launch {
+            pauseDiscoveryForTransfer()
             acquireHighPerfWifiLock()
             val ctx = appContext
             val resolvedItems = if (ctx != null) {
@@ -1260,17 +1399,25 @@ object MioraTransferEngine {
             val totalBytes = resolvedItems.sumOf { it.size }
             val displayName = if (resolvedItems.size == 1) resolvedItems.first().name else "${resolvedItems.first().name} +${resolvedItems.size - 1}"
 
+            val effectiveProtocol = if (ssid.isNotBlank()) TransferProtocol.WIFI_DIRECT else TransferProtocol.LOCAL_WIFI
+
             val initialRecord = TransferRecord(
                 id = UUID.randomUUID().toString(),
                 fileName = displayName,
                 fileSize = totalBytes,
                 direction = TransferDirection.SEND,
-                protocol = TransferProtocol.WIFI_DIRECT,
+                protocol = effectiveProtocol,
                 status = TransferStatus.CONNECTING,
                 progress = 0f,
-                speedMbps = 0f
+                speedMbps = 0f,
+                uriString = resolvedItems.firstOrNull()?.uri?.toString()
             )
             TransferController.updateActiveSend(initialRecord)
+            TransferController.startTransferSession(
+                items = resolvedItems,
+                protocol = effectiveProtocol,
+                receiverName = ssid.ifBlank { hostIp }
+            )
 
             val targetPort = if (port > 0) port else MIORA_PORT
             val allCandidateIps = (hostIps + hostIp)
@@ -1289,9 +1436,13 @@ object MioraTransferEngine {
             val myPrefixes = myCurrentIps.map { it.substringBeforeLast(".") }.toSet()
 
             val phase1Ips = if (ssid.isNotBlank()) {
-                // If QR has a dedicated Wi-Fi Direct SSID, only probe IPs matching our current active subnet(s) first
-                allCandidateIps.filter { candidate ->
-                    myPrefixes.contains(candidate.substringBeforeLast("."))
+                // If QR has a dedicated Wi-Fi Direct SSID, only probe LAN if explicitly enabled
+                if (DeviceConnectivityManager.isLanTransferEnabled()) {
+                    allCandidateIps.filter { candidate ->
+                        myPrefixes.contains(candidate.substringBeforeLast("."))
+                    }
+                } else {
+                    emptyList()
                 }
             } else {
                 allCandidateIps
@@ -1305,8 +1456,9 @@ object MioraTransferEngine {
                             try {
                                 val probeSocket = Socket()
                                 probeSocket.tcpNoDelay = true
-                                probeSocket.sendBufferSize = BUFFER_SIZE
-                                probeSocket.receiveBufferSize = BUFFER_SIZE
+                                probeSocket.soTimeout = 30000
+                                probeSocket.sendBufferSize = WIFI_BUFFER_SIZE
+                                probeSocket.receiveBufferSize = WIFI_BUFFER_SIZE
                                 probeSocket.keepAlive = true
                                 probeSocket.connect(InetSocketAddress(candidateIp, targetPort), 650)
                                 connectedSockets.offer(probeSocket)
@@ -1343,6 +1495,7 @@ object MioraTransferEngine {
                 if (hotspotResult == null) {
                     TransferController.cancelSendTransfer()
                     releaseHighPerfWifiLock()
+                    resumeDiscoveryAfterTransfer()
                     withContext(Dispatchers.Main) { onComplete(false) }
                     return@launch
                 }
@@ -1376,8 +1529,9 @@ object MioraTransferEngine {
                                 Socket()
                             }
                             testSocket.tcpNoDelay = true
-                            testSocket.sendBufferSize = BUFFER_SIZE
-                            testSocket.receiveBufferSize = BUFFER_SIZE
+                            testSocket.soTimeout = 30000
+                            testSocket.sendBufferSize = WIFI_BUFFER_SIZE
+                            testSocket.receiveBufferSize = WIFI_BUFFER_SIZE
                             testSocket.keepAlive = true
                             testSocket.connect(InetSocketAddress(targetIp, targetPort), 1800)
 
@@ -1395,12 +1549,18 @@ object MioraTransferEngine {
 
             // Final fallback: if ssid was blank or hotspot didn't yield a socket yet, try any remaining candidate IPs
             if (socket == null) {
-                for (candidateIp in allCandidateIps) {
+                val fallbackCandidateIps = if (ssid.isNotBlank() && !DeviceConnectivityManager.isLanTransferEnabled()) {
+                    allCandidateIps.filter { it.startsWith("192.168.49.") || it.startsWith("192.168.43.") }
+                } else {
+                    allCandidateIps
+                }
+                for (candidateIp in fallbackCandidateIps) {
                     try {
                         val fallbackSocket = Socket()
                         fallbackSocket.tcpNoDelay = true
-                        fallbackSocket.sendBufferSize = BUFFER_SIZE
-                        fallbackSocket.receiveBufferSize = BUFFER_SIZE
+                        fallbackSocket.soTimeout = 30000
+                        fallbackSocket.sendBufferSize = WIFI_BUFFER_SIZE
+                        fallbackSocket.receiveBufferSize = WIFI_BUFFER_SIZE
                         fallbackSocket.keepAlive = true
                         fallbackSocket.connect(InetSocketAddress(candidateIp, targetPort), 1500)
                         socket = fallbackSocket
@@ -1416,6 +1576,7 @@ object MioraTransferEngine {
                     DeviceConnectivityManager.disconnectReceiverFromHotspot()
                 }
                 releaseHighPerfWifiLock()
+                resumeDiscoveryAfterTransfer()
                 withContext(Dispatchers.Main) { onComplete(false) }
                 return@launch
             }
@@ -1445,6 +1606,7 @@ object MioraTransferEngine {
                 if (!TransferController.isDiscoverable.value) {
                     releaseHighPerfWifiLock()
                 }
+                resumeDiscoveryAfterTransfer()
             }
 
             withContext(Dispatchers.Main) {
@@ -1462,6 +1624,7 @@ object MioraTransferEngine {
     ) {
         clientJob?.cancel()
         clientJob = engineScope.launch {
+            pauseDiscoveryForTransfer()
             acquireHighPerfWifiLock()
             val ctx = appContext
             val resolvedItems = if (ctx != null) {
@@ -1484,63 +1647,120 @@ object MioraTransferEngine {
                 protocol = protocolPreference,
                 status = TransferStatus.CONNECTING,
                 progress = 0f,
-                speedMbps = 0f
+                speedMbps = 0f,
+                uriString = resolvedItems.firstOrNull()?.uri?.toString()
             )
             TransferController.updateActiveSend(initialRecord)
+            TransferController.startTransferSession(
+                items = resolvedItems,
+                protocol = protocolPreference,
+                receiverName = peer.name
+            )
 
             var isSuccess = false
 
-            when (protocolPreference) {
-                TransferProtocol.WIFI_DIRECT -> {
-                    // Try LAN/Wi-Fi TCP Socket if IP is already known
-                    if (peer.hostAddress != null) {
-                        isSuccess = sendViaWifi(
-                            peer = peer,
-                            items = resolvedItems,
-                            totalBytes = totalBytes,
-                            senderDeviceName = senderDeviceName,
-                            initialRecord = initialRecord.copy(protocol = TransferProtocol.WIFI_DIRECT)
-                        )
+            try {
+                when (protocolPreference) {
+                    TransferProtocol.LOCAL_WIFI -> {
+                        // 1. First, attempt Wi-Fi / LAN TCP Socket directly
+                        if (peer.hostAddress != null) {
+                            isSuccess = sendViaWifi(
+                                peer = peer,
+                                items = resolvedItems,
+                                totalBytes = totalBytes,
+                                senderDeviceName = senderDeviceName,
+                                initialRecord = initialRecord.copy(protocol = TransferProtocol.LOCAL_WIFI)
+                            )
+                        }
+                        // 2. If LAN failed, fallback 100% to Wi-Fi Direct (P2P)
+                        if (!isSuccess) {
+                            val p2pIp = if (peer.hostAddress?.startsWith("192.168.49.") == true || peer.hostAddress?.startsWith("192.168.43.") == true) {
+                                peer.hostAddress
+                            } else {
+                                "192.168.49.1"
+                            }
+                            isSuccess = sendViaWifi(
+                                peer = peer.copy(hostAddress = p2pIp),
+                                items = resolvedItems,
+                                totalBytes = totalBytes,
+                                senderDeviceName = senderDeviceName,
+                                initialRecord = initialRecord.copy(protocol = TransferProtocol.WIFI_DIRECT)
+                            )
+                        }
+                        // 3. Fallback to Bluetooth if Wi-Fi Direct also fails
+                        if (!isSuccess && peer.deviceAddress.contains(":")) {
+                            isSuccess = sendViaBluetooth(
+                                peer = peer,
+                                items = resolvedItems,
+                                totalBytes = totalBytes,
+                                senderDeviceName = senderDeviceName,
+                                initialRecord = initialRecord.copy(protocol = TransferProtocol.BLUETOOTH)
+                            )
+                        }
                     }
-                    // Fallback to Bluetooth if Wi-Fi IP is unreachable
-                    if (!isSuccess && peer.deviceAddress.contains(":")) {
-                        isSuccess = sendViaBluetooth(
-                            peer = peer,
-                            items = resolvedItems,
-                            totalBytes = totalBytes,
-                            senderDeviceName = senderDeviceName,
-                            initialRecord = initialRecord.copy(protocol = TransferProtocol.BLUETOOTH)
-                        )
-                    }
-                }
-                TransferProtocol.BLUETOOTH -> {
-                    if (peer.deviceAddress.contains(":")) {
-                        isSuccess = sendViaBluetooth(
-                            peer = peer,
-                            items = resolvedItems,
-                            totalBytes = totalBytes,
-                            senderDeviceName = senderDeviceName,
-                            initialRecord = initialRecord.copy(protocol = TransferProtocol.BLUETOOTH)
-                        )
-                    }
-                    // Fallback to direct socket if peer was discovered over network or BLE provided its IP
-                    if (!isSuccess && peer.hostAddress != null) {
-                        isSuccess = sendViaWifi(
-                            peer = peer,
-                            items = resolvedItems,
-                            totalBytes = totalBytes,
-                            senderDeviceName = senderDeviceName,
-                            initialRecord = initialRecord.copy(protocol = TransferProtocol.BLUETOOTH)
-                        )
-                    }
-                }
-            }
+                    TransferProtocol.WIFI_DIRECT -> {
+                        // Pure Wi-Fi Direct: P2P / Hotspot connection only
+                        val isP2pAddress = peer.hostAddress?.startsWith("192.168.49.") == true ||
+                                           peer.hostAddress?.startsWith("192.168.43.") == true ||
+                                           peer.id.startsWith("p2p_")
 
-            if (!isSuccess) {
-                TransferController.cancelSendTransfer()
-            }
-            if (!TransferController.isDiscoverable.value) {
-                releaseHighPerfWifiLock()
+                        if (isP2pAddress || DeviceConnectivityManager.isLanTransferEnabled()) {
+                            if (peer.hostAddress != null) {
+                                isSuccess = sendViaWifi(
+                                    peer = peer,
+                                    items = resolvedItems,
+                                    totalBytes = totalBytes,
+                                    senderDeviceName = senderDeviceName,
+                                    initialRecord = initialRecord.copy(protocol = TransferProtocol.WIFI_DIRECT)
+                                )
+                            }
+                        }
+                        // Fallback to Bluetooth if Wi-Fi Direct is unreachable
+                        if (!isSuccess && peer.deviceAddress.contains(":")) {
+                            isSuccess = sendViaBluetooth(
+                                peer = peer,
+                                items = resolvedItems,
+                                totalBytes = totalBytes,
+                                senderDeviceName = senderDeviceName,
+                                initialRecord = initialRecord.copy(protocol = TransferProtocol.BLUETOOTH)
+                            )
+                        }
+                    }
+                    TransferProtocol.BLUETOOTH -> {
+                        if (peer.deviceAddress.contains(":")) {
+                            isSuccess = sendViaBluetooth(
+                                peer = peer,
+                                items = resolvedItems,
+                                totalBytes = totalBytes,
+                                senderDeviceName = senderDeviceName,
+                                initialRecord = initialRecord.copy(protocol = TransferProtocol.BLUETOOTH)
+                            )
+                        }
+                        // Fallback to direct socket if peer was discovered over network or BLE provided its IP
+                        if (!isSuccess && peer.hostAddress != null) {
+                            val isP2pAddress = peer.hostAddress.startsWith("192.168.49.") ||
+                                               peer.hostAddress.startsWith("192.168.43.") ||
+                                               peer.id.startsWith("p2p_")
+                            if (isP2pAddress || DeviceConnectivityManager.isLanTransferEnabled()) {
+                                isSuccess = sendViaWifi(
+                                    peer = peer,
+                                    items = resolvedItems,
+                                    totalBytes = totalBytes,
+                                    senderDeviceName = senderDeviceName,
+                                    initialRecord = initialRecord.copy(protocol = TransferProtocol.BLUETOOTH)
+                                )
+                            }
+                        }
+                    }
+                }
+            } finally {
+                if (!isSuccess) {
+                    TransferController.cancelSendTransfer()
+                }
+                if (!TransferController.isDiscoverable.value) {
+                    releaseHighPerfWifiLock()
+                }
+                resumeDiscoveryAfterTransfer()
             }
 
             withContext(Dispatchers.Main) {
@@ -1564,8 +1784,9 @@ object MioraTransferEngine {
             socket = Socket()
             activeClientTcpSocket = socket
             socket.tcpNoDelay = true
-            socket.sendBufferSize = BUFFER_SIZE
-            socket.receiveBufferSize = BUFFER_SIZE
+            socket.soTimeout = 30000
+            socket.sendBufferSize = WIFI_BUFFER_SIZE
+            socket.receiveBufferSize = WIFI_BUFFER_SIZE
             socket.keepAlive = true
             socket.connect(InetSocketAddress(host, targetPort), 4500)
 
@@ -1601,8 +1822,29 @@ object MioraTransferEngine {
             val device = adapter.getRemoteDevice(peer.deviceAddress)
             adapter.cancelDiscovery()
 
-            // Try BLE L2CAP channel first if advertised (works with unbonded BLE random RPA addresses)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && peer.blePsm > 0) {
+            // 1. Try Classic RFCOMM Socket first for rock-solid stability and maximum throughput
+            val rfcommSocket = try {
+                device.createInsecureRfcommSocketToServiceRecord(MIORA_RFCOMM_UUID)
+            } catch (_: Exception) {
+                try {
+                    device.createRfcommSocketToServiceRecord(MIORA_RFCOMM_UUID)
+                } catch (_: Exception) { null }
+            }
+
+            if (rfcommSocket != null) {
+                try {
+                    activeClientBtSocket = rfcommSocket
+                    rfcommSocket.connect()
+                    btSocket = rfcommSocket
+                } catch (_: Exception) {
+                    try { rfcommSocket.close() } catch (_: Exception) {}
+                    activeClientBtSocket = null
+                    btSocket = null
+                }
+            }
+
+            // 2. Fallback to BLE L2CAP channel if RFCOMM could not connect and peer advertised BLE PSM
+            if (btSocket == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && peer.blePsm > 0) {
                 try {
                     val l2capSocket = device.createInsecureL2capChannel(peer.blePsm)
                     activeClientBtSocket = l2capSocket
@@ -1615,16 +1857,8 @@ object MioraTransferEngine {
                 }
             }
 
-            // Fallback to Classic RFCOMM Socket
             if (btSocket == null) {
-                val rfcommSocket = try {
-                    device.createInsecureRfcommSocketToServiceRecord(MIORA_RFCOMM_UUID)
-                } catch (_: Exception) {
-                    device.createRfcommSocketToServiceRecord(MIORA_RFCOMM_UUID)
-                }
-                activeClientBtSocket = rfcommSocket
-                rfcommSocket.connect()
-                btSocket = rfcommSocket
+                return@withContext false
             }
 
             return@withContext performSendStream(
@@ -1647,6 +1881,9 @@ object MioraTransferEngine {
     fun resolveExactFileSize(context: Context, item: MediaItem): Long {
         try {
             context.contentResolver.openFileDescriptor(item.uri, "r")?.use { pfd ->
+                val chan = FileInputStream(pfd.fileDescriptor).channel
+                val s = chan.size()
+                if (s > 0L) return s
                 val stat = pfd.statSize
                 if (stat > 0L) return stat
             }
@@ -1657,16 +1894,19 @@ object MioraTransferEngine {
                 if (len > 0L) return len
             }
         } catch (_: Exception) {}
+        try {
+            context.contentResolver.query(item.uri, arrayOf(android.provider.MediaStore.MediaColumns.SIZE), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val s = cursor.getLong(0)
+                    if (s > 0L) return s
+                }
+            }
+        } catch (_: Exception) {}
         if (item.size > 0L) return item.size
         try {
             context.contentResolver.openInputStream(item.uri)?.use { stream ->
-                val buf = ByteArray(64 * 1024)
-                var count = 0L
-                var r: Int
-                while (stream.read(buf).also { r = it } != -1) {
-                    count += r
-                }
-                if (count > 0L) return count
+                val avail = stream.available().toLong()
+                if (avail > 0L) return avail
             }
         } catch (_: Exception) {}
         return item.size.coerceAtLeast(0L)
@@ -1680,8 +1920,11 @@ object MioraTransferEngine {
         senderDeviceName: String,
         initialRecord: TransferRecord
     ): Boolean = withContext(Dispatchers.IO) {
-        val dos = DataOutputStream(BufferedOutputStream(outputStream, BUFFER_SIZE))
-        val dis = DataInputStream(BufferedInputStream(inputStream, BUFFER_SIZE))
+        val isBluetooth = initialRecord.protocol == TransferProtocol.BLUETOOTH
+        val streamBufSize = if (isBluetooth) BT_STREAM_BUFFER_SIZE else WIFI_BUFFER_SIZE
+        val chunkSize = if (isBluetooth) BT_CHUNK_SIZE else WIFI_CHUNK_SIZE
+        val dos = DataOutputStream(BufferedOutputStream(outputStream, streamBufSize))
+        val dis = DataInputStream(BufferedInputStream(inputStream, streamBufSize))
 
         // 1. Handshake
         dos.writeUTF(PROTOCOL_MAGIC)
@@ -1709,8 +1952,11 @@ object MioraTransferEngine {
         val context = appContext ?: return@withContext false
         var totalBytesSent = 0L
         val startTime = System.currentTimeMillis()
-        var lastUiUpdateMs = 0L
-        val buffer = ByteArray(BUFFER_SIZE)
+        var lastUiUpdateMs = System.currentTimeMillis()
+        var windowStartTime = System.currentTimeMillis()
+        var windowBytesSent = 0L
+        var runningInstantSpeedMbps = 0f
+        val buffer = ByteArray(chunkSize)
 
         for (item in items) {
             val expectedSize = item.size.coerceAtLeast(0L)
@@ -1718,39 +1964,68 @@ object MioraTransferEngine {
             dos.writeLong(expectedSize)
             dos.flush()
 
+            TransferController.updateSessionProgress(
+                bytesTransferred = totalBytesSent,
+                speedMbps = runningInstantSpeedMbps,
+                currentFileName = item.name
+            )
+
             var fileBytesSent = 0L
-            context.contentResolver.openInputStream(item.uri)?.use { inStream ->
-                val bufferedIn = BufferedInputStream(inStream, BUFFER_SIZE)
-                while (fileBytesSent < expectedSize) {
-                    if (!isActive) throw CancellationException("Transfer cancelled")
-                    val maxToRead = ((expectedSize - fileBytesSent).coerceAtMost(buffer.size.toLong())).toInt()
-                    val read = bufferedIn.read(buffer, 0, maxToRead)
-                    if (read == -1) break
-                    dos.write(buffer, 0, read)
-                    fileBytesSent += read
-                    totalBytesSent += read
+            var inStream: InputStream? = null
+            try {
+                inStream = context.contentResolver.openInputStream(item.uri)
+                if (inStream != null) {
+                    val bufferedIn = BufferedInputStream(inStream, chunkSize)
+                    while (fileBytesSent < expectedSize) {
+                        if (!isActive) throw CancellationException("Transfer cancelled")
+                        val maxToRead = ((expectedSize - fileBytesSent).coerceAtMost(buffer.size.toLong())).toInt()
+                        val read = bufferedIn.read(buffer, 0, maxToRead)
+                        if (read == -1) break
+                        dos.write(buffer, 0, read)
+                        fileBytesSent += read
+                        totalBytesSent += read
+                        windowBytesSent += read
 
-                    val now = System.currentTimeMillis()
-                    if (now - lastUiUpdateMs >= 80L || fileBytesSent == expectedSize) {
-                        lastUiUpdateMs = now
-                        val elapsed = (now - startTime) / 1000f
-                        val speed = if (elapsed > 0f) (totalBytesSent / (1024f * 1024f)) / elapsed else 0f
-                        val progress = if (totalBytes > 0L) (totalBytesSent.toFloat() / totalBytes).coerceIn(0f, 1f) else 1f
+                        val now = System.currentTimeMillis()
+                        val uiElapsed = now - lastUiUpdateMs
+                        if (uiElapsed >= 160L || fileBytesSent == expectedSize) {
+                            lastUiUpdateMs = now
+                            val windowElapsed = (now - windowStartTime) / 1000f
+                            if (windowElapsed >= 0.2f) {
+                                val sampleSpeed = (windowBytesSent / (1024f * 1024f)) / windowElapsed
+                                runningInstantSpeedMbps = if (runningInstantSpeedMbps <= 0f) {
+                                    sampleSpeed
+                                } else {
+                                    runningInstantSpeedMbps * 0.65f + sampleSpeed * 0.35f
+                                }
+                                windowStartTime = now
+                                windowBytesSent = 0L
+                            }
 
-                        TransferController.updateActiveSend(
-                            initialRecord.copy(
-                                status = TransferStatus.TRANSFERRING,
-                                progress = progress,
-                                speedMbps = speed
+                            val progress = if (totalBytes > 0L) (totalBytesSent.toFloat() / totalBytes).coerceIn(0f, 1f) else 1f
+
+                            TransferController.updateActiveSend(
+                                initialRecord.copy(
+                                    status = TransferStatus.TRANSFERRING,
+                                    progress = progress,
+                                    speedMbps = runningInstantSpeedMbps
+                                )
                             )
-                        )
+                            TransferController.updateSessionProgress(
+                                bytesTransferred = totalBytesSent,
+                                speedMbps = runningInstantSpeedMbps,
+                                currentFileName = item.name
+                            )
+                        }
                     }
                 }
+            } finally {
+                try { inStream?.close() } catch (_: Exception) {}
             }
 
             // Guarantee stream frame alignment if a virtual content provider reported slightly more bytes than EOF
             if (fileBytesSent < expectedSize) {
-                val zeroPad = ByteArray(8192)
+                val zeroPad = ByteArray(4096)
                 while (fileBytesSent < expectedSize) {
                     val toPad = ((expectedSize - fileBytesSent).coerceAtMost(zeroPad.size.toLong())).toInt()
                     dos.write(zeroPad, 0, toPad)
@@ -1759,21 +2034,41 @@ object MioraTransferEngine {
                 }
             }
             dos.flush()
+
+            // File completed sending - register in transfer session
+            val elapsedSoFar = ((System.currentTimeMillis() - startTime) / 1000f).coerceAtLeast(0.01f)
+            val currentSpeed = (totalBytesSent / (1024f * 1024f)) / elapsedSoFar
+            val completedItemRecord = TransferRecord(
+                id = UUID.randomUUID().toString(),
+                fileName = item.name,
+                fileSize = expectedSize,
+                direction = TransferDirection.SEND,
+                protocol = initialRecord.protocol,
+                timestamp = System.currentTimeMillis(),
+                status = TransferStatus.COMPLETED,
+                progress = 1f,
+                speedMbps = currentSpeed,
+                uriString = item.uri.toString()
+            )
+            TransferController.onFileCompletedInSession(completedItemRecord)
         }
 
         // 4. Verification & Completion
         val finalResponse = dis.readUTF()
         if (finalResponse == "SUCCESS") {
             val totalElapsedSec = ((System.currentTimeMillis() - startTime) / 1000f).coerceAtLeast(0.05f)
+            val overallAverageSpeed = (totalBytesSent / (1024f * 1024f)) / totalElapsedSec
             val finalRecord = initialRecord.copy(
                 status = TransferStatus.COMPLETED,
                 progress = 1f,
-                speedMbps = (totalBytesSent / (1024f * 1024f)) / totalElapsedSec
+                speedMbps = overallAverageSpeed
             )
             TransferController.completeSend(finalRecord)
+            TransferController.finishTransferSession(success = true, finalSpeedMbps = overallAverageSpeed)
             return@withContext true
         } else {
             TransferController.cancelSendTransfer()
+            TransferController.finishTransferSession(success = false)
             return@withContext false
         }
     }
@@ -1785,6 +2080,10 @@ object MioraTransferEngine {
         activeClientTcpSocket = null
         try { activeClientBtSocket?.close() } catch (_: Exception) {}
         activeClientBtSocket = null
+        if (!TransferController.isDiscoverable.value) {
+            releaseHighPerfWifiLock()
+        }
+        resumeDiscoveryAfterTransfer()
     }
 
     fun cancelReceive() {
@@ -1792,5 +2091,9 @@ object MioraTransferEngine {
         activeServerSocketConnection = null
         try { activeBluetoothSocketConnection?.close() } catch (_: Exception) {}
         activeBluetoothSocketConnection = null
+        if (!TransferController.isDiscoverable.value) {
+            releaseHighPerfWifiLock()
+        }
+        resumeDiscoveryAfterTransfer()
     }
 }

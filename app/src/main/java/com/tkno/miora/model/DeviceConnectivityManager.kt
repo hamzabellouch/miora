@@ -47,15 +47,19 @@ object DeviceConnectivityManager {
 
     private const val PREF_ALLOW_LOCATION = "allow_location_permission"
     private const val PREF_USE_5GHZ_BAND = "use_5ghz_wifi_direct"
+    private const val PREF_ENABLE_LAN_TRANSFER = "enable_lan_transfer"
 
     private val _isNearbyPermissionGranted = MutableStateFlow(false)
     val isNearbyPermissionGranted: StateFlow<Boolean> = _isNearbyPermissionGranted.asStateFlow()
 
-    private val _allowLocationPermission = MutableStateFlow(true)
+    private val _allowLocationPermission = MutableStateFlow(false)
     val allowLocationPermission: StateFlow<Boolean> = _allowLocationPermission.asStateFlow()
 
-    private val _use5GhzBand = MutableStateFlow(false)
+    private val _use5GhzBand = MutableStateFlow(true)
     val use5GhzBand: StateFlow<Boolean> = _use5GhzBand.asStateFlow()
+
+    private val _isLanTransferEnabled = MutableStateFlow(false)
+    val isLanTransferEnabled: StateFlow<Boolean> = _isLanTransferEnabled.asStateFlow()
 
     // Wi-Fi P2P (Direct) Live State
     private val _wifiP2pInfo = MutableStateFlow<WifiP2pInfo?>(null)
@@ -167,10 +171,16 @@ object DeviceConnectivityManager {
         val wifiManager = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         _isWifiEnabled.value = wifiManager?.isWifiEnabled == true
 
-        // Location & 5GHz preference check
+        // Location & 5GHz preference check (Location permission disabled by default)
         val prefs = ctx.getSharedPreferences("miora_prefs", Context.MODE_PRIVATE)
-        _allowLocationPermission.value = prefs.getBoolean(PREF_ALLOW_LOCATION, true)
-        _use5GhzBand.value = prefs.getBoolean(PREF_USE_5GHZ_BAND, false)
+        val hasExplicitOverride = prefs.getBoolean("location_permission_user_override", false)
+        _allowLocationPermission.value = if (hasExplicitOverride) {
+            prefs.getBoolean(PREF_ALLOW_LOCATION, false)
+        } else {
+            false
+        }
+        _use5GhzBand.value = prefs.getBoolean(PREF_USE_5GHZ_BAND, true)
+        _isLanTransferEnabled.value = prefs.getBoolean(PREF_ENABLE_LAN_TRANSFER, false)
 
         // Permissions check
         _isNearbyPermissionGranted.value = hasNearbyPermissions(ctx)
@@ -522,7 +532,7 @@ object DeviceConnectivityManager {
             startWifiDirectAccessPoint(
                 deviceName = deviceName,
                 onStarted = { p2pSsid, p2pPass, p2pIp ->
-                    val allIps = (listOf(p2pIp, "192.168.49.1") + getAllLocalIpAddresses() + listOf("192.168.43.1"))
+                    val allIps = listOf(p2pIp, "192.168.49.1", "192.168.43.1")
                         .filter { it.isNotBlank() && it != "127.0.0.1" && it != "0.0.0.0" }
                         .distinct()
                     onStarted(p2pSsid, p2pPass, allIps)
@@ -531,17 +541,17 @@ object DeviceConnectivityManager {
                     // Tier 2: Fall back to LocalOnlyHotspot
                     startSenderHotspot(
                         onStarted = { ssid, passphrase, ip ->
-                            val allIps = (listOf(ip, "192.168.43.1") + getAllLocalIpAddresses() + listOf("192.168.49.1"))
+                            val allIps = listOf(ip, "192.168.43.1", "192.168.49.1")
                                 .filter { it.isNotBlank() && it != "127.0.0.1" && it != "0.0.0.0" }
                                 .distinct()
                             onStarted(ssid, passphrase, allIps)
                         },
                         onFailed = { hotspotErrorCode ->
-                            // Tier 3: Fallback to existing LAN IP
+                            // Tier 3: Fallback to existing LAN IP only if user explicitly enabled LAN transfer
                             val lanIps = getAllLocalIpAddresses()
                                 .filter { it.isNotBlank() && it != "127.0.0.1" && it != "0.0.0.0" }
                                 .distinct()
-                            if (lanIps.isNotEmpty()) {
+                            if (isLanTransferEnabled() && lanIps.isNotEmpty()) {
                                 onStarted("", "", lanIps)
                             } else {
                                 onFailed("Could not start Wi-Fi Direct or Hotspot (Codes: $p2pErrorCode / $hotspotErrorCode)")
@@ -554,7 +564,7 @@ object DeviceConnectivityManager {
             // Tier 1b (If P2P not supported): Try LocalOnlyHotspot
             startSenderHotspot(
                 onStarted = { ssid, passphrase, ip ->
-                    val allIps = (listOf(ip, "192.168.43.1") + getAllLocalIpAddresses() + listOf("192.168.49.1"))
+                    val allIps = listOf(ip, "192.168.43.1", "192.168.49.1")
                         .filter { it.isNotBlank() && it != "127.0.0.1" && it != "0.0.0.0" }
                         .distinct()
                     onStarted(ssid, passphrase, allIps)
@@ -563,7 +573,7 @@ object DeviceConnectivityManager {
                     val lanIps = getAllLocalIpAddresses()
                         .filter { it.isNotBlank() && it != "127.0.0.1" && it != "0.0.0.0" }
                         .distinct()
-                    if (lanIps.isNotEmpty()) {
+                    if (isLanTransferEnabled() && lanIps.isNotEmpty()) {
                         onStarted("", "", lanIps)
                     } else {
                         onFailed("Could not start Hotspot (Code: $hotspotErrorCode)")
@@ -894,7 +904,10 @@ object DeviceConnectivityManager {
 
     fun setAllowLocationPermission(context: Context, allow: Boolean) {
         val prefs = context.getSharedPreferences("miora_prefs", Context.MODE_PRIVATE)
-        prefs.edit().putBoolean(PREF_ALLOW_LOCATION, allow).apply()
+        prefs.edit()
+            .putBoolean(PREF_ALLOW_LOCATION, allow)
+            .putBoolean("location_permission_user_override", true)
+            .apply()
         _allowLocationPermission.value = allow
         checkStates(context)
     }
@@ -902,8 +915,12 @@ object DeviceConnectivityManager {
     fun isLocationPermissionAllowed(context: Context? = null): Boolean {
         val ctx = context ?: appContext
         if (ctx != null) {
-            return ctx.getSharedPreferences("miora_prefs", Context.MODE_PRIVATE)
-                .getBoolean(PREF_ALLOW_LOCATION, true)
+            val prefs = ctx.getSharedPreferences("miora_prefs", Context.MODE_PRIVATE)
+            val hasExplicitOverride = prefs.getBoolean("location_permission_user_override", false)
+            if (!hasExplicitOverride) {
+                return false
+            }
+            return prefs.getBoolean(PREF_ALLOW_LOCATION, false)
         }
         return _allowLocationPermission.value
     }
@@ -918,9 +935,27 @@ object DeviceConnectivityManager {
         val ctx = context ?: appContext
         if (ctx != null) {
             return ctx.getSharedPreferences("miora_prefs", Context.MODE_PRIVATE)
-                .getBoolean(PREF_USE_5GHZ_BAND, false)
+                .getBoolean(PREF_USE_5GHZ_BAND, true)
         }
         return _use5GhzBand.value
+    }
+
+    fun setLanTransferEnabled(context: Context, enabled: Boolean) {
+        val prefs = context.getSharedPreferences("miora_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(PREF_ENABLE_LAN_TRANSFER, enabled).apply()
+        _isLanTransferEnabled.value = enabled
+        if (!enabled && TransferController.selectedProtocol.value == TransferProtocol.LOCAL_WIFI) {
+            TransferController.setProtocol(context, TransferProtocol.WIFI_DIRECT)
+        }
+    }
+
+    fun isLanTransferEnabled(context: Context? = null): Boolean {
+        val ctx = context ?: appContext
+        if (ctx != null) {
+            return ctx.getSharedPreferences("miora_prefs", Context.MODE_PRIVATE)
+                .getBoolean(PREF_ENABLE_LAN_TRANSFER, false)
+        }
+        return _isLanTransferEnabled.value
     }
 
     fun getNearbyPermissions(context: Context? = null): Array<String> {

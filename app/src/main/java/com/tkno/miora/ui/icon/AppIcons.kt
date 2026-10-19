@@ -885,6 +885,218 @@ private var _arrowDownward: ImageVector? = null
 public val arrow_downward: ImageVector
     get() = ArrowDownward
 
+public val CompareArrows: ImageVector
+    get() {
+        if (_compareArrows != null) {
+            return _compareArrows!!
+        }
+        _compareArrows = ImageVector.Builder(
+            name = "compare_arrows",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply {
+            path(
+                fill = SolidColor(Color.Black),
+                fillAlpha = 1f,
+                stroke = null,
+                strokeAlpha = 1f,
+                strokeLineWidth = 1f,
+                strokeLineCap = StrokeCap.Butt,
+                strokeLineJoin = StrokeJoin.Bevel,
+                strokeLineMiter = 1f,
+                pathFillType = PathFillType.NonZero,
+            ) {
+                moveTo(8f, 20f)
+                lineTo(6.6f, 18.58f)
+                lineTo(9.18f, 16f)
+                horizontalLineTo(2f)
+                verticalLineTo(14f)
+                horizontalLineTo(9.18f)
+                lineTo(6.6f, 11.43f)
+                lineTo(8f, 10f)
+                lineToRelative(5f, 5f)
+                lineTo(8f, 20f)
+                close()
+                moveToRelative(8f, -6f)
+                lineTo(11f, 9f)
+                lineTo(16f, 4f)
+                lineToRelative(1.4f, 1.43f)
+                lineTo(14.83f, 8f)
+                horizontalLineTo(22f)
+                verticalLineToRelative(2f)
+                horizontalLineTo(14.83f)
+                lineToRelative(2.58f, 2.57f)
+                lineTo(16f, 14f)
+                close()
+            }
+        }.build()
+        return _compareArrows!!
+    }
+
+private var _compareArrows: ImageVector? = null
+
+public val compare_arrows: ImageVector
+    get() = CompareArrows
+
+public val LibraryMusic: ImageVector
+    get() {
+        if (_libraryMusic != null) {
+            return _libraryMusic!!
+        }
+        _libraryMusic = ImageVector.Builder(
+            name = "library_music",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply {
+            path(
+                fill = SolidColor(Color.Black),
+                fillAlpha = 1f,
+                stroke = null,
+                strokeAlpha = 1f,
+                strokeLineWidth = 1f,
+                strokeLineCap = StrokeCap.Butt,
+                strokeLineJoin = StrokeJoin.Bevel,
+                strokeLineMiter = 1f,
+                pathFillType = PathFillType.NonZero,
+            ) {
+                moveTo(12.5f, 15f)
+                quadToRelative(1.05f, 0f, 1.78f, -0.73f)
+                reflectiveQuadTo(15f, 12.5f)
+                verticalLineTo(7f)
+                horizontalLineToRelative(3f)
+                verticalLineTo(5f)
+                horizontalLineTo(14f)
+                verticalLineToRelative(5.5f)
+                quadTo(13.68f, 10.25f, 13.3f, 10.13f)
+                reflectiveQuadTo(12.5f, 10f)
+                quadToRelative(-1.05f, 0f, -1.77f, 0.72f)
+                reflectiveQuadTo(10f, 12.5f)
+                reflectiveQuadToRelative(0.73f, 1.77f)
+                reflectiveQuadTo(12.5f, 15f)
+                close()
+                moveTo(8f, 18f)
+                quadTo(7.18f, 18f, 6.59f, 17.41f)
+                reflectiveQuadTo(6f, 16f)
+                verticalLineTo(4f)
+                quadTo(6f, 3.17f, 6.59f, 2.59f)
+                reflectiveQuadTo(8f, 2f)
+                horizontalLineTo(20f)
+                quadToRelative(0.83f, 0f, 1.41f, 0.59f)
+                reflectiveQuadTo(22f, 4f)
+                verticalLineTo(16f)
+                quadToRelative(0f, 0.82f, -0.59f, 1.41f)
+                reflectiveQuadTo(20f, 18f)
+                horizontalLineTo(8f)
+                close()
+                moveTo(8f, 16f)
+                horizontalLineTo(20f)
+                verticalLineTo(4f)
+                horizontalLineTo(8f)
+                verticalLineTo(16f)
+                close()
+                moveTo(4f, 22f)
+                quadTo(3.18f, 22f, 2.59f, 21.41f)
+                reflectiveQuadTo(2f, 20f)
+                verticalLineTo(6f)
+                horizontalLineTo(4f)
+                verticalLineTo(20f)
+                horizontalLineTo(18f)
+                verticalLineToRelative(2f)
+                horizontalLineTo(4f)
+                close()
+                moveTo(8f, 4f)
+                verticalLineTo(16f)
+                verticalLineTo(4f)
+                close()
+            }
+        }.build()
+        return _libraryMusic!!
+    }
+
+private var _libraryMusic: ImageVector? = null
+
+public val library_music: ImageVector
+    get() = LibraryMusic
+
+public val Files: ImageVector
+    get() {
+        if (_files != null) {
+            return _files!!
+        }
+        _files = ImageVector.Builder(
+            name = "files",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply {
+            path(
+                fill = SolidColor(Color.Black),
+                fillAlpha = 1f,
+                stroke = null,
+                strokeAlpha = 1f,
+                strokeLineWidth = 1f,
+                strokeLineCap = StrokeCap.Butt,
+                strokeLineJoin = StrokeJoin.Bevel,
+                strokeLineMiter = 1f,
+                pathFillType = PathFillType.NonZero,
+            ) {
+                moveTo(4f, 20f)
+                quadTo(3.18f, 20f, 2.59f, 19.41f)
+                reflectiveQuadTo(2f, 18f)
+                verticalLineTo(8f)
+                quadTo(2f, 7.18f, 2.59f, 6.59f)
+                reflectiveQuadTo(4f, 6f)
+                horizontalLineToRelative(6f)
+                lineTo(12f, 4f)
+                horizontalLineToRelative(8f)
+                quadToRelative(0.83f, 0f, 1.41f, 0.59f)
+                quadTo(22f, 5.18f, 22f, 6f)
+                verticalLineTo(18f)
+                quadToRelative(0f, 0.82f, -0.59f, 1.41f)
+                reflectiveQuadTo(20f, 20f)
+                horizontalLineTo(4f)
+                close()
+                moveTo(5.83f, 13f)
+                horizontalLineTo(11f)
+                verticalLineTo(7.82f)
+                lineTo(5.83f, 13f)
+                close()
+                moveTo(4f, 12f)
+                lineTo(8f, 8f)
+                horizontalLineTo(4f)
+                verticalLineToRelative(4f)
+                close()
+                moveToRelative(0f, 3f)
+                verticalLineToRelative(3f)
+                horizontalLineTo(20f)
+                verticalLineTo(6f)
+                horizontalLineTo(13f)
+                verticalLineToRelative(7f)
+                quadToRelative(0f, 0.82f, -0.59f, 1.41f)
+                reflectiveQuadTo(11f, 15f)
+                horizontalLineTo(4f)
+                close()
+                moveToRelative(7f, -4f)
+                close()
+            }
+        }.build()
+        return _files!!
+    }
+
+private var _files: ImageVector? = null
+
+@get:JvmName("getFilesLowercase")
+public val files: ImageVector
+    get() = Files
+
+public val FilesIcon: ImageVector
+    get() = Files
+
 
 
 

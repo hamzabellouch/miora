@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.tkno.miora.model.DeviceConnectivityManager
+import com.tkno.miora.model.TransferController
 import com.tkno.miora.ui.component.AppRequirementsDialog
 import com.tkno.miora.ui.component.ClassicBottomBar
 import com.tkno.miora.ui.component.FloatingBottomBar
@@ -87,6 +88,13 @@ fun MainScreen(
         com.tkno.miora.ui.component.AppRequirementsDialog(
             onDismiss = { showRequirementsDialog = false }
         )
+    }
+
+    val pendingSharedUris by TransferController.pendingSharedUris.collectAsState()
+    LaunchedEffect(pendingSharedUris) {
+        if (pendingSharedUris.isNotEmpty()) {
+            currentTab = Tab.Send
+        }
     }
 
     LaunchedEffect(navigateToUpdate) {

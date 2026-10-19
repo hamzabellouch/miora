@@ -20,7 +20,7 @@ Miora is an active Android project focused on providing a clean, fast, secure, a
 When submitting a bug report, please make sure your issue contains **sufficient information** to reproduce the problem. Useful details include:
 
 - Sender and Receiver device models and Android OS versions
-- Miora app version (e.g., `0.0.1-beta`)
+- Miora app version (e.g., `0.0.2-beta`)
 - Active transfer protocol (`Wi-Fi Direct`, `Bluetooth`, `Smart Auto`, or `QR Pairing`)
 - Granted permission states (Nearby Devices, Location, Bluetooth, Media/Storage, Camera)
 - Steps to reproduce the bug

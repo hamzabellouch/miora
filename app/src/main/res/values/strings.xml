@@ -239,6 +239,7 @@
     <string name="clear_history_confirm">Are you sure you want to clear transfer history?</string>
     <string name="open_file">Open</string>
     <string name="share_file">Share</string>
+    <string name="files_count_label">%1$d file(s)</string>
 
     <string name="device_name">Device Name</string>
     <string name="device_name_desc">Visible identifier when discovering devices</string>
@@ -284,6 +285,37 @@
     <string name="protocol_current_active">Current Protocol: %1$s</string>
     <string name="protocol_wifi_details">Ultra-fast transfers up to 250 Mbps via direct peer-to-peer connection. Best for large 4K videos, full albums, and heavy files without internet.</string>
     <string name="protocol_bluetooth_details">Low-power connection saving battery. Ideal for documents, single photos, and lightweight files without requiring local Wi-Fi.</string>
+    <string name="local_wifi">Local Wi-Fi (LAN)</string>
+    <string name="protocol_local_wifi">Local Wi-Fi (LAN)</string>
+    <string name="protocol_local_wifi_details">Fast, direct transfer over your shared local Wi-Fi router. Requires both devices to be connected to the same Wi-Fi network. Automatically falls back to Wi-Fi Direct if unreachable.</string>
+    <string name="enable_lan_transfer">Local Wi-Fi (LAN) Transfer</string>
+    <string name="enable_lan_transfer_desc">Allow file transfer through your shared local Wi-Fi router when both devices are on the same network</string>
     <string name="protocol_active_badge">Active</string>
     <string name="protocol_select">Select</string>
+    <string name="select_protocol">Select Protocol</string>
+    <string name="select_protocol_hint_title">Select Transfer Protocol</string>
+    <string name="select_protocol_hint_desc">Tap to choose Wi-Fi Direct or Bluetooth to begin transferring files</string>
+    <string name="wifi_direct_transfer">Wi-Fi Direct Transfer</string>
+    <string name="scan_receiver_qr_code">Scan Receiver QR Code</string>
+    <string name="scan_qr_hint_short">Scan receiver\'s QR code to connect &amp; send</string>
+    <string name="wifi_required_warning">Wi-Fi is required for direct transfer</string>
+    <string name="enable">Enable</string>
+    <string name="select_receive_protocol_title">Select Receive Protocol</string>
+    <string name="select_receive_protocol_desc">Choose Wi-Fi Direct to show a QR code or Bluetooth to listen for nearby senders</string>
+    <string name="device_hidden_title">Device is Not Discoverable</string>
+    <string name="device_hidden_desc">Turn on visibility above so senders can find this device and transfer files</string>
+    <string name="make_visible">Make Discoverable</string>
+    <string name="sending_files">Sending Files</string>
+    <string name="add_more_files">Add more files</string>
+    <string name="sent_items_header">Transferred Files</string>
+    <string name="transfer_done">Done</string>
+    <string name="connecting_to_receiver">Connecting to receiver...</string>
+    <string name="no_files_sent_yet">Files will appear here as they are transferred</string>
+    <string name="receiving_files">Receiving Files</string>
+    <string name="received_items_header">Received Files</string>
+    <string name="no_files_received_yet">Files will appear here as they are received</string>
+    <string name="transfer_interrupted">Transfer was interrupted or failed</string>
+    <string name="waiting_for_sender">Waiting for sender...</string>
+    <string name="max_files_limit_wifi">Maximum limit for Wi-Fi Direct is %1$d files</string>
+    <string name="max_files_limit_bt">Maximum limit for Bluetooth is %1$d files</string>
 </resources>

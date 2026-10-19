@@ -1,5 +1,7 @@
 package com.tkno.miora.ui.receive
 
+import android.content.Context
+import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.compose.animation.*
@@ -7,11 +9,13 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -33,23 +37,42 @@ import androidx.compose.ui.unit.sp
 import com.tkno.miora.QrGenerator
 import com.tkno.miora.R
 import com.tkno.miora.model.*
+import com.tkno.miora.ui.component.TransferProtocolDialog
+import com.tkno.miora.ui.send.SendTransferSessionView
 
 @Composable
 fun ReceiveScreen() {
     val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("miora_prefs", Context.MODE_PRIVATE) }
+    var useClassicTaskbar by remember { mutableStateOf(prefs.getBoolean("use_classic_taskbar", false)) }
+
+    DisposableEffect(prefs) {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { p, key ->
+            if (key == "use_classic_taskbar") {
+                useClassicTaskbar = p.getBoolean("use_classic_taskbar", false)
+            }
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose {
+            prefs.unregisterOnSharedPreferenceChangeListener(listener)
+        }
+    }
+
     val deviceName by TransferController.deviceName.collectAsState()
     val isDiscoverable by TransferController.isDiscoverable.collectAsState()
     val incomingRequest by TransferController.incomingRequest.collectAsState()
     val activeReceive by TransferController.activeReceive.collectAsState()
+    val activeReceiveSession by TransferController.activeReceiveSession.collectAsState()
     val isWifiEnabled by DeviceConnectivityManager.isWifiEnabled.collectAsState()
     val isBluetoothEnabled by DeviceConnectivityManager.isBluetoothEnabled.collectAsState()
     val use5GhzBand by DeviceConnectivityManager.use5GhzBand.collectAsState()
 
-    var selectedReceiveMode by rememberSaveable { mutableStateOf(TransferProtocol.WIFI_DIRECT) }
+    var selectedReceiveMode by remember { mutableStateOf<TransferProtocol?>(null) }
     var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isHotspotLoading by remember { mutableStateOf(false) }
     var currentHotspotSsid by remember { mutableStateOf("") }
     var currentHotspotIp by remember { mutableStateOf("") }
+    var showProtocolDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(isDiscoverable, deviceName, isBluetoothEnabled, isWifiEnabled) {
         if (isDiscoverable) {
@@ -57,31 +80,54 @@ fun ReceiveScreen() {
         }
     }
 
-    // Manage Hotspot & QR Code when Wi-Fi Direct mode is active
+    // Manage Hotspot & QR Code when Wi-Fi Direct or Local Wi-Fi mode is active
     LaunchedEffect(selectedReceiveMode, isDiscoverable, isWifiEnabled, deviceName, use5GhzBand) {
-        if (isDiscoverable && selectedReceiveMode == TransferProtocol.WIFI_DIRECT && isWifiEnabled) {
-            isHotspotLoading = true
-            DeviceConnectivityManager.startReceiverAccessPoint(
-                deviceName = deviceName,
-                onStarted = { ssid, password, ips ->
-                    currentHotspotSsid = ssid
-                    currentHotspotIp = ips.firstOrNull() ?: "192.168.49.1"
-                    val ipCsv = ips.joinToString(",")
-                    val qrContent = "MIORA_WIFI:$ssid:$password:$ipCsv:${MioraTransferEngine.MIORA_PORT}"
-                    qrBitmap = QrGenerator.generate(qrContent, 600)
+        if (isDiscoverable && isWifiEnabled) {
+            when (selectedReceiveMode) {
+                TransferProtocol.WIFI_DIRECT -> {
+                    isHotspotLoading = true
+                    DeviceConnectivityManager.startReceiverAccessPoint(
+                        deviceName = deviceName,
+                        onStarted = { ssid, password, ips ->
+                            currentHotspotSsid = ssid
+                            currentHotspotIp = ips.firstOrNull() ?: "192.168.49.1"
+                            val ipCsv = ips.joinToString(",")
+                            val qrContent = "MIORA_WIFI:$ssid:$password:$ipCsv:${MioraTransferEngine.MIORA_PORT}"
+                            qrBitmap = QrGenerator.generate(qrContent, 600)
+                            isHotspotLoading = false
+                        },
+                        onFailed = { reason ->
+                            // Fallback to local LAN IP only if LAN transfer is enabled
+                            if (DeviceConnectivityManager.isLanTransferEnabled()) {
+                                val lanIps = DeviceConnectivityManager.getAllLocalIpAddresses().filter { it != "127.0.0.1" }
+                                val ipCsv = if (lanIps.isNotEmpty()) lanIps.joinToString(",") else "127.0.0.1"
+                                currentHotspotIp = ipCsv
+                                currentHotspotSsid = ""
+                                val qrContent = "MIORA_WIFI:::$ipCsv:${MioraTransferEngine.MIORA_PORT}"
+                                qrBitmap = QrGenerator.generate(qrContent, 600)
+                            } else {
+                                qrBitmap = null
+                            }
+                            isHotspotLoading = false
+                        }
+                    )
+                }
+                TransferProtocol.LOCAL_WIFI -> {
+                    DeviceConnectivityManager.stopReceiverAccessPoint()
                     isHotspotLoading = false
-                },
-                onFailed = { reason ->
-                    // Fallback to local LAN IP if Hotspot is not supported/failed
                     val lanIps = DeviceConnectivityManager.getAllLocalIpAddresses().filter { it != "127.0.0.1" }
                     val ipCsv = if (lanIps.isNotEmpty()) lanIps.joinToString(",") else "127.0.0.1"
                     currentHotspotIp = ipCsv
                     currentHotspotSsid = ""
                     val qrContent = "MIORA_WIFI:::$ipCsv:${MioraTransferEngine.MIORA_PORT}"
                     qrBitmap = QrGenerator.generate(qrContent, 600)
-                    isHotspotLoading = false
                 }
-            )
+                else -> {
+                    DeviceConnectivityManager.stopReceiverAccessPoint()
+                    isHotspotLoading = false
+                    qrBitmap = null
+                }
+            }
         } else {
             DeviceConnectivityManager.stopReceiverAccessPoint()
             isHotspotLoading = false
@@ -92,6 +138,9 @@ fun ReceiveScreen() {
     DisposableEffect(Unit) {
         onDispose {
             DeviceConnectivityManager.stopReceiverAccessPoint()
+            TransferController.setDiscoverable(false)
+            MioraTransferEngine.stopListeningServer()
+            TransferController.clearReceiveSession()
         }
     }
 
@@ -104,34 +153,99 @@ fun ReceiveScreen() {
         )
     }
 
+    if (showProtocolDialog) {
+        TransferProtocolDialog(
+            selectedProtocol = selectedReceiveMode,
+            onProtocolSelect = { protocol ->
+                selectedReceiveMode = protocol
+                TransferController.setProtocol(context, protocol)
+                if (!isDiscoverable) {
+                    TransferController.setDiscoverable(true)
+                }
+            },
+            onDismiss = { showProtocolDialog = false }
+        )
+    }
+
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 20.dp)
+        modifier = Modifier.fillMaxSize()
     ) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = 24.dp, bottom = 120.dp),
+        if (activeReceiveSession != null) {
+            SendTransferSessionView(
+                session = activeReceiveSession!!,
+                useClassicTaskbar = useClassicTaskbar,
+                isReceiver = true,
+                onCloseSession = {
+                    TransferController.clearReceiveSession()
+                }
+            )
+        } else {
+            LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 20.dp),
+            contentPadding = PaddingValues(
+                top = 24.dp,
+                bottom = if (useClassicTaskbar) 120.dp else 220.dp
+            ),
             verticalArrangement = Arrangement.spacedBy(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Header
+            // Header with Title & Transfer Protocol Capsule
             item {
-                Column(
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = stringResource(R.string.tab_receive),
-                        fontSize = 28.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = stringResource(R.string.receive_mode_title),
-                        fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = stringResource(R.string.tab_receive),
+                            fontSize = 28.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = stringResource(R.string.receive_mode_title),
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    // Transfer Protocol Capsule
+                    Surface(
+                        onClick = { showProtocolDialog = true },
+                        shape = CircleShape,
+                        color = if (selectedReceiveMode != null) MaterialTheme.colorScheme.secondaryContainer
+                                else MaterialTheme.colorScheme.surfaceContainerHigh
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .height(36.dp)
+                                .padding(horizontal = 14.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = when (selectedReceiveMode) {
+                                    TransferProtocol.WIFI_DIRECT -> Icons.Outlined.Wifi
+                                    TransferProtocol.LOCAL_WIFI -> Icons.Outlined.Router
+                                    TransferProtocol.BLUETOOTH -> Icons.Outlined.Bluetooth
+                                    null -> Icons.Outlined.Tune
+                                },
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = if (selectedReceiveMode != null) MaterialTheme.colorScheme.primary
+                                       else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = selectedReceiveMode?.displayName ?: stringResource(R.string.select_protocol),
+                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                                color = if (selectedReceiveMode != null) MaterialTheme.colorScheme.onSecondaryContainer
+                                        else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
             }
 
@@ -189,55 +303,10 @@ fun ReceiveScreen() {
                             )
                         }
 
-                        Spacer(modifier = Modifier.height(14.dp))
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        // Interactive Mode Selectors (Wi-Fi Direct with QR vs Bluetooth with Radar)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            ReceiveModeCard(
-                                icon = Icons.Outlined.Wifi,
-                                title = "Wi-Fi Direct",
-                                subtitle = "QR Code Mode",
-                                isSelected = selectedReceiveMode == TransferProtocol.WIFI_DIRECT,
-                                isEnabled = isWifiEnabled,
-                                onClick = {
-                                    if (!isWifiEnabled) {
-                                        DeviceConnectivityManager.openWifiSettings(context)
-                                    } else {
-                                        selectedReceiveMode = TransferProtocol.WIFI_DIRECT
-                                        if (!isDiscoverable) {
-                                            TransferController.toggleDiscoverability()
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.weight(1f)
-                            )
-                            ReceiveModeCard(
-                                icon = Icons.Outlined.Bluetooth,
-                                title = "Bluetooth",
-                                subtitle = "Radar Mode",
-                                isSelected = selectedReceiveMode == TransferProtocol.BLUETOOTH,
-                                isEnabled = isBluetoothEnabled,
-                                onClick = {
-                                    if (!isBluetoothEnabled) {
-                                        DeviceConnectivityManager.openBluetoothSettings(context)
-                                    } else {
-                                        selectedReceiveMode = TransferProtocol.BLUETOOTH
-                                        if (!isDiscoverable) {
-                                            TransferController.toggleDiscoverability()
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-
                         if (!isWifiEnabled || !isBluetoothEnabled) {
-                            Spacer(modifier = Modifier.height(10.dp))
+                            Spacer(modifier = Modifier.height(14.dp))
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                            Spacer(modifier = Modifier.height(14.dp))
                             Surface(
                                 color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f),
                                 shape = RoundedCornerShape(12.dp),
@@ -297,8 +366,65 @@ fun ReceiveScreen() {
                 }
             }
 
-            // Central Display: QR Code (for Wi-Fi Direct) OR Radar (for Bluetooth)
-            if (isDiscoverable) {
+            // Central Display: Prompt, QR Code (Wi-Fi Direct) or Radar (Bluetooth)
+            if (selectedReceiveMode == null) {
+                // Initial State: Prompt to select a Transfer Protocol
+                item {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        shape = RoundedCornerShape(22.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showProtocolDialog = true }
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(20.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                shape = CircleShape,
+                                modifier = Modifier.size(48.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.SwapHoriz,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(26.dp)
+                                    )
+                                }
+                            }
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.select_receive_protocol_title),
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = stringResource(R.string.select_receive_protocol_desc),
+                                    fontSize = 12.sp,
+                                    lineHeight = 17.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            } else if (isDiscoverable) {
                 item {
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -312,129 +438,181 @@ fun ReceiveScreen() {
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            if (selectedReceiveMode == TransferProtocol.WIFI_DIRECT) {
-                                // Wi-Fi Direct QR Code Mode
+                            if (selectedReceiveMode == TransferProtocol.WIFI_DIRECT || selectedReceiveMode == TransferProtocol.LOCAL_WIFI) {
+                                // Wi-Fi Direct or Local Wi-Fi QR Code Mode
                                 if (isHotspotLoading) {
                                     CircularProgressIndicator(
                                         modifier = Modifier.size(48.dp),
                                         strokeWidth = 3.dp,
                                         color = MaterialTheme.colorScheme.primary
                                     )
-                                Text(
-                                    text = "Creating fast Wi-Fi Direct connection...",
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            } else if (qrBitmap != null) {
-                                Surface(
-                                    color = Color.White,
-                                    shape = RoundedCornerShape(20.dp),
-                                    shadowElevation = 6.dp,
-                                    modifier = Modifier.size(220.dp)
-                                ) {
-                                    Box(
-                                        contentAlignment = Alignment.Center,
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .padding(12.dp)
+                                    Text(
+                                        text = "Creating fast Wi-Fi Direct connection...",
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                } else if (qrBitmap != null) {
+                                    Surface(
+                                        color = Color.White,
+                                        shape = RoundedCornerShape(20.dp),
+                                        shadowElevation = 6.dp,
+                                        modifier = Modifier.size(220.dp)
                                     ) {
-                                        Image(
-                                            bitmap = qrBitmap!!.asImageBitmap(),
-                                            contentDescription = "Receiver QR Code",
-                                            modifier = Modifier.fillMaxSize()
-                                        )
-                                    }
-                                }
-
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Outlined.QrCodeScanner,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Text(
-                                            text = "Scan QR Code to Send",
-                                            fontSize = 16.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                    }
-                                    if (currentHotspotSsid.isNotBlank()) {
-                                        Surface(
-                                            color = MaterialTheme.colorScheme.primaryContainer,
-                                            shape = RoundedCornerShape(8.dp)
+                                        Box(
+                                            contentAlignment = Alignment.Center,
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(12.dp)
                                         ) {
-                                            Row(
-                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                            ) {
-                                                Icon(
-                                                    Icons.Outlined.Wifi,
-                                                    contentDescription = null,
-                                                    tint = MaterialTheme.colorScheme.primary,
-                                                    modifier = Modifier.size(14.dp)
-                                                )
-                                                Text(
-                                                    text = currentHotspotSsid,
-                                                    fontSize = 12.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                                )
-                                            }
+                                            Image(
+                                                bitmap = qrBitmap!!.asImageBitmap(),
+                                                contentDescription = "Receiver QR Code",
+                                                modifier = Modifier.fillMaxSize()
+                                            )
                                         }
                                     }
+
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Outlined.QrCodeScanner,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Text(
+                                                text = "Scan QR Code to Send",
+                                                fontSize = 16.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                        if (currentHotspotSsid.isNotBlank()) {
+                                            Surface(
+                                                color = MaterialTheme.colorScheme.primaryContainer,
+                                                shape = RoundedCornerShape(8.dp)
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Outlined.Wifi,
+                                                        contentDescription = null,
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                    Text(
+                                                        text = currentHotspotSsid,
+                                                        fontSize = 12.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Text(
+                                            text = "Point the Sender's camera at this QR code to connect and receive files instantly.",
+                                            fontSize = 13.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            textAlign = TextAlign.Center,
+                                            modifier = Modifier.padding(horizontal = 12.dp)
+                                        )
+                                    }
+                                } else {
                                     Text(
-                                        text = "Point the Sender's camera at this QR code to connect and receive files instantly.",
+                                        text = "Wi-Fi is disabled. Turn on Wi-Fi above to generate QR code.",
                                         fontSize = 13.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        textAlign = TextAlign.Center,
-                                        modifier = Modifier.padding(horizontal = 12.dp)
+                                        color = MaterialTheme.colorScheme.error,
+                                        textAlign = TextAlign.Center
                                     )
                                 }
                             } else {
+                                // Bluetooth Radar Mode
+                                BigRadarAnimation(isActive = isDiscoverable && isBluetoothEnabled)
+
                                 Text(
-                                    text = "Wi-Fi is disabled. Turn on Wi-Fi above to generate QR code.",
-                                    fontSize = 13.sp,
-                                    color = MaterialTheme.colorScheme.error,
+                                    text = if (isBluetoothEnabled) stringResource(R.string.listening_connections)
+                                    else "Bluetooth is disabled",
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
                                     textAlign = TextAlign.Center
                                 )
-                            }
-                        } else {
-                            // Bluetooth Radar Mode
-                            BigRadarAnimation(isActive = isDiscoverable && isBluetoothEnabled)
 
+                                Text(
+                                    text = if (isBluetoothEnabled)
+                                        "Nearby Miora senders can discover this device over Bluetooth and send files."
+                                    else "Turn on Bluetooth to enable nearby discovery.",
+                                    fontSize = 13.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(horizontal = 12.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Discoverability is turned off
+                item {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        shape = RoundedCornerShape(22.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                shape = CircleShape,
+                                modifier = Modifier.size(56.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.VisibilityOff,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                }
+                            }
                             Text(
-                                text = if (isBluetoothEnabled) stringResource(R.string.listening_connections)
-                                else "Bluetooth is disabled",
+                                text = stringResource(R.string.device_hidden_title),
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSurface,
                                 textAlign = TextAlign.Center
                             )
-
                             Text(
-                                text = if (isBluetoothEnabled)
-                                    "Nearby Miora senders can discover this device over Bluetooth and send files."
-                                else "Turn on Bluetooth to enable nearby discovery.",
+                                text = stringResource(R.string.device_hidden_desc),
                                 fontSize = 13.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 12.dp)
+                                textAlign = TextAlign.Center
                             )
+                            Button(
+                                onClick = { TransferController.setDiscoverable(true) },
+                                shape = CircleShape,
+                                modifier = Modifier.padding(top = 4.dp)
+                            ) {
+                                Text(stringResource(R.string.make_visible))
+                            }
                         }
                     }
                 }
-            }
             }
         }
 
@@ -445,8 +623,17 @@ fun ReceiveScreen() {
                 onCancel = { TransferController.cancelReceiveTransfer() },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 90.dp)
+                    .then(
+                        if (!useClassicTaskbar) {
+                            Modifier
+                                .navigationBarsPadding()
+                                .padding(bottom = 90.dp, start = 22.dp, end = 22.dp)
+                        } else {
+                            Modifier.padding(bottom = 16.dp, start = 22.dp, end = 22.dp)
+                        }
+                    )
             )
+        }
         }
 
         // Incoming Request Alert Card / Dialog
@@ -741,7 +928,7 @@ fun ActiveReceiveCard(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "${(transfer.progress * 100).toInt()}% • ${String.format(java.util.Locale.US, "%.1f MB/s", transfer.speedMbps)} (${transfer.protocol.displayName})",
+                            text = "${(transfer.progress * 100).toInt()}% • ${transfer.formattedSpeed} (${transfer.protocol.displayName})",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.primary
                         )
